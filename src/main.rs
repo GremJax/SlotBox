@@ -3,30 +3,46 @@ use std::collections::{HashMap, HashSet};
 // Runtime Value
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 enum ValueKind {
-    Int32,Float32,Bool,String,ObjectId(ShapeId),SlotId,Function,None
+    Int32,
+    Float32,
+    uInt32,
+    Bool,
+    String,
+    ObjectId(ShapeId),
+    Array(Box<ValueKind>),
+    SlotId(Box<ValueKind>),
+    Pointer(ObjectId, Box<SlotId>),
+    Function,
+    None
 }
 
 #[derive(Default, Debug, Clone)]
 enum Value {
     Int32(i32),
     Float32(f32),
+    uInt32(u32),
     Bool(bool),
     String(String),
     ObjectId(ObjectId),
     SlotId(SlotId),
+    Pointer(ObjectId, SlotId),
     Function(Function),
     #[default] None,
 }
 
 impl Value {
+    fn is(&self, kind: &ValueKind) -> bool { self.kind() == *kind }
+
     fn kind(&self) -> ValueKind {
         match self {
             Value::Int32(_) => ValueKind::Int32,
             Value::Float32(_) => ValueKind::Float32,
+            Value::uInt32(_) => ValueKind::uInt32,
             Value::Bool(_) => ValueKind::Bool,
             Value::String(_) => ValueKind::String,
             Value::ObjectId(_) => ValueKind::ObjectId(0), // Placeholder, actual ShapeId should be used
-            Value::SlotId(_) => ValueKind::SlotId,
+            Value::SlotId(s) => ValueKind::SlotId(Box::new(s.value_type.clone())),
+            Value::Pointer(object_id, slot) => ValueKind::Pointer(*object_id, Box::new(slot.clone())),
             Value::Function(_) => ValueKind::Function,
             Value::None => ValueKind::None,
         }
@@ -60,13 +76,24 @@ struct SlotId {
 }
 
 // Runtime Slot state
+enum SlotStorage {
+    Single(Value),
+    Array(Vec<Value>),
+    Empty,
+}
+
+impl Default for SlotStorage {
+    fn default() -> Self {
+        SlotStorage::Single(Value::default())
+    }
+}
+
 type SlotStateId = u32;
 
 #[derive(Default)]
 struct SlotState {
-    present: bool,
     sealed: bool,
-    value: Value,
+    storage: SlotStorage,
 }
 
 // Shape
@@ -143,12 +170,11 @@ impl Object {
             panic!("Invalid slot ID");
         }
         let state = &mut self.slot_states[(slot_id - 1) as usize];
-        state.present = true;
-        state.value = value;
+        state.storage = SlotStorage::Single(value);
     }
 }
 
-fn printHello(params: FunctionParams) -> Value {
+fn print_hello(params: FunctionParams) -> Value {
     println!("Hello from native function! Caller: {}", params.caller);
     Value::None
 }
@@ -156,7 +182,7 @@ fn printHello(params: FunctionParams) -> Value {
 // Runtime
 struct Runtime {
     objects: HashMap<ObjectId, Object>,
-    shapes: HashMap<ShapeId, Shape>,
+    shapes: HashMap<ShapeId, Shape>,    
     next_object_id: ObjectId,
     next_shape_id: ShapeId,
 }
@@ -350,8 +376,10 @@ impl Runtime {
         let object = self.get_object(object_id);
         if let Some(state_id) = object.slot_mapping.get(slot) {
             if let Some(state) = object.get_slot_state(*state_id) {
-                if state.present {
-                    return Some(&state.value);
+                match &state.storage {
+                    SlotStorage::Single(value) => return Some(value),
+                    SlotStorage::Array(_) => panic!("Array slot access not implemented"),
+                    SlotStorage::Empty => return None, // Not present
                 }
             }
         }
@@ -382,10 +410,10 @@ impl Runtime {
             if let Some(state) = object.get_slot_state(state_id) {
                 
                 print!("Local slot {}: ", state_id);
-                if state.present {
-                    println!("{:?}", state.value);
-                } else {
-                    println!("<empty>");
+                match &state.storage {
+                    SlotStorage::Single(value) => println!("{:?}", value),
+                    SlotStorage::Array(_) => println!("Array slot"),
+                    SlotStorage::Empty => println!("<empty>"),
                 }
 
                 let mapped_slots: Vec<String> = object.slot_mapping.iter()
@@ -465,7 +493,7 @@ fn main() {
         self_type: vector_shape,
         input_types: vec![],
         output_type: ValueKind::None,
-        func: printHello,
+        func: print_hello,
     }));
     
     if let Some(Value::Function(func)) = runtime.get_slot_value(runtime.get_shape(vector_shape).static_object_id, &static_func) {
@@ -475,5 +503,14 @@ fn main() {
         };
         (func.func)(params);
     }
+
+    // Is shape checks
+    let obj2 = runtime.create_object("Object2".to_string());
+    runtime.attach_shape(obj2, vector_shape);
+    runtime.print_object(obj2);
+    println!();
+
+    println!("Is Object1 a Vector? {}", runtime.is_shape(obj1, vector_shape));
+    println!("Is Object2 a Vector? {}", runtime.is_shape(obj2, vector_shape));
 
 }

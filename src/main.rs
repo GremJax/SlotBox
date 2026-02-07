@@ -87,7 +87,7 @@ impl Shape {
         let slot = SlotId {
             shape_id: self.id,
             slot_num: num,
-            name: name,
+            name: format!("{}.{}", self.name, name),
             value_type: kind,
             is_static,
         };
@@ -148,6 +148,11 @@ impl Object {
     }
 }
 
+fn printHello(params: FunctionParams) -> Value {
+    println!("Hello from native function! Caller: {}", params.caller);
+    Value::None
+}
+
 // Runtime
 struct Runtime {
     objects: HashMap<ObjectId, Object>,
@@ -178,6 +183,7 @@ impl Runtime {
             next_slot_state_id: 1,
         };
 
+        println!("Created object with ID {}, '{}'", id, object.name);
         self.objects.insert(id, object);
         id
     }
@@ -193,6 +199,8 @@ impl Runtime {
             slot_remapping: HashMap::new(),
             static_object_id: 0,
         };
+
+        println!("Created shape with ID {}, '{}'", id, shape.name);
 
         // Static singleton
         let static_singleton = self.create_object(format!("{}::static", shape.name));
@@ -214,12 +222,14 @@ impl Runtime {
             self.attach_slot(static_object_id, slot.clone());
         }
         
+        println!("Defined slot {}", slot.name);
         slot
     }
 
     fn define_remapping_on_shape(&mut self, shape_id: ShapeId, from: &SlotId, to: &SlotId) {
         let shape = self.get_shape_mut(shape_id);
         shape.remap_slot(from, to);
+        println!("Mapping {} -> {} in shape {}", from.name, to.name, shape.name);
     }
 
     fn attach_slot(&mut self, object_id: ObjectId, slot: SlotId) {
@@ -229,6 +239,7 @@ impl Runtime {
         // Find default remapping if exists
         if let Some(remapped_slot) = shape.slot_remapping.get(&slot) {
             target_slot = remapped_slot.clone();
+            println!("- Will remap {} -> {}", slot.name, target_slot.name);
         } else {
             target_slot = slot.clone();
         }
@@ -243,12 +254,16 @@ impl Runtime {
         let state_id;
         if target_slot != slot && object.slot_mapping.contains_key(&target_slot) {
             state_id = *object.slot_mapping.get(&target_slot).unwrap();
+            println!("- Mapping {} to existing local slot {} (shared with {})", slot.name, state_id, target_slot.name);
+
         } else {
             state_id = object.allocate_slot();
+            println!("- Allocated local slot {} for {}", state_id, slot.name);
 
             // If different target, also map it
             if target_slot != slot {
                 object.slot_mapping.insert(target_slot.clone(), state_id);
+                println!("- Also mapping {} to same local slot {}", target_slot.name, state_id);
             }
         }
 
@@ -270,12 +285,15 @@ impl Runtime {
     }
 
     fn attach_shape(&mut self, object_id: ObjectId, shape_id: ShapeId) {
-        let slots: Vec<SlotId> = self.get_shape_mut(shape_id)
+        let shape = self.get_shape_mut(shape_id);
+        let slots: Vec<SlotId> = shape
             .defined_slots
             .iter()
             .filter(|slot| !slot.is_static)
             .cloned()
             .collect();
+        
+        println!("Attaching shape {} to object {}", shape.name, object_id);
         
         for slot in slots {
             self.attach_slot(object_id, slot);
@@ -283,12 +301,15 @@ impl Runtime {
     }
 
     fn detach_shape(&mut self, object_id: ObjectId, shape_id: ShapeId) {
-        let slots: Vec<SlotId> = self.get_shape_mut(shape_id)
+        let shape = self.get_shape_mut(shape_id);
+        let slots: Vec<SlotId> = shape
             .defined_slots
             .iter()
             .filter(|slot| !slot.is_static)
             .cloned()
             .collect();
+        
+        println!("Detaching shape {} from object {}", shape.name, object_id);
         
         for slot in slots {
             self.detach_slot(object_id, slot);
@@ -353,9 +374,106 @@ impl Runtime {
         }
     }
 
+    fn print_object(&self, object_id: ObjectId) {
+        let object = self.get_object(object_id);
+        println!("Object {}: '{}'", object.id, object.name);
+
+        for state_id in 1..=object.slot_states.len() as SlotStateId{
+            if let Some(state) = object.get_slot_state(state_id) {
+                
+                print!("Local slot {}: ", state_id);
+                if state.present {
+                    println!("{:?}", state.value);
+                } else {
+                    println!("<empty>");
+                }
+
+                let mapped_slots: Vec<String> = object.slot_mapping.iter()
+                    .filter(|(_, id)| **id == state_id)
+                    .map(|(slot, _)| slot.name.clone())
+                    .collect();
+                println!("  Mapped slots: {}", mapped_slots.join(", "));
+
+            }   
+        }
+    }
 
 }
 
 fn main() {
     println!("Hello, world!");
+
+    let mut runtime = Runtime::new();
+
+    // Vector Shape
+    let vector_shape = runtime.create_shape("Vector".to_string());
+    let vec_x = runtime.define_slot_on_shape(vector_shape, 1, "x".to_string(), ValueKind::Int32, false);
+    let vec_y = runtime.define_slot_on_shape(vector_shape, 2, "y".to_string(), ValueKind::Int32, false);
+    
+    let static_field = runtime.define_slot_on_shape(vector_shape, 3, "static_field".to_string(), ValueKind::String, true);
+    runtime.set_slot_value(runtime.get_shape(vector_shape).static_object_id, &static_field, Value::String("I am static".to_string()));
+    println!();
+
+    // Position Shape
+    let position_shape = runtime.create_shape("Position".to_string());
+    let pos_x = runtime.define_slot_on_shape(position_shape, 1, "x".to_string(), ValueKind::Int32, false);
+    let pos_y = runtime.define_slot_on_shape(position_shape, 2, "y".to_string(), ValueKind::Int32, false);
+    runtime.define_remapping_on_shape(position_shape, &pos_x, &vec_x);
+    runtime.define_remapping_on_shape(position_shape, &pos_y, &vec_y);
+    println!();
+
+    // Create object and attach shape
+    let obj1 = runtime.create_object("Object1".to_string());
+    runtime.attach_shape(obj1, vector_shape);
+    runtime.print_object(obj1);
+    println!();
+
+    // Set values
+    runtime.set_slot_value(obj1, &vec_x, Value::Int32(10));
+    runtime.set_slot_value(obj1, &vec_y, Value::Int32(20));
+    runtime.print_object(obj1);
+    println!();
+
+    // Attach position
+    runtime.attach_shape(obj1, position_shape);
+    runtime.print_object(obj1);
+    println!();
+
+    // Modify via position slots
+    runtime.set_slot_value(obj1, &pos_x, Value::Int32(30));
+    runtime.set_slot_value(obj1, &pos_y, Value::Int32(40));
+    runtime.print_object(obj1);
+    println!();
+
+    // Detach
+    runtime.detach_shape(obj1, vector_shape);
+    runtime.print_object(obj1);
+    println!();
+
+    // Deallocate
+    runtime.detach_shape(obj1, position_shape);
+    runtime.print_object(obj1);
+    println!();
+
+    // Print static field
+    let static_value = runtime.get_slot_value(runtime.get_shape(vector_shape).static_object_id, &static_field);
+    println!("Static field value: {:?}", static_value);
+
+    // Execute static function
+    let static_func = runtime.define_slot_on_shape(vector_shape, 4, "static_func".to_string(), ValueKind::Function, true);
+    runtime.set_slot_value(runtime.get_shape(vector_shape).static_object_id, &static_func, Value::Function(Function {
+        self_type: vector_shape,
+        input_types: vec![],
+        output_type: ValueKind::None,
+        func: printHello,
+    }));
+    
+    if let Some(Value::Function(func)) = runtime.get_slot_value(runtime.get_shape(vector_shape).static_object_id, &static_func) {
+        let params = FunctionParams {
+            caller: obj1,
+            inputs: vec![],
+        };
+        (func.func)(params);
+    }
+
 }

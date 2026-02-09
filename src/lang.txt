@@ -1,0 +1,23 @@
+shape Point {
+    X int32
+    Y int32
+}
+
+shape Named {
+    Name string
+}
+
+object firstThing
+attach firstThing Point
+print firstThing
+
+attach firstThing Named
+print firstThing
+
+firstThing.X = 100
+firstThing.Y = 20
+firstThing.Name = "Thing"
+print firstThing
+
+detach firstThing Point
+print firstThing

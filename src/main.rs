@@ -1,11 +1,12 @@
-use std::collections::{HashMap, HashSet};
+use std::{collections::{HashMap, HashSet}, fs};
 
-pub mod ast;
+pub mod parser;
 pub mod tokenizer;
+pub mod executor;
 
 // Runtime Value
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
-enum ValueKind {
+pub enum ValueKind {
     Int32,
     Float32,
     uInt32,
@@ -227,10 +228,6 @@ impl Runtime {
 
         println!("Created shape with ID {}, '{}'", id, shape.name);
 
-        // Static singleton
-        let static_singleton = self.create_object(format!("{}::static", shape.name));
-        shape.static_object_id = static_singleton;
-
         self.shapes.insert(id, shape);
         id
     }
@@ -243,7 +240,19 @@ impl Runtime {
         };
 
         if is_static {
-            let static_object_id = self.get_shape(shape_id).static_object_id;
+            // Define shape and id
+            let (shape_name, static_object_id) = {
+                let shape = self.get_shape_mut(shape_id);
+                (shape.name.clone(), shape.static_object_id)
+            };
+
+            // Create static singleton if does not exist
+            if static_object_id == 0 {
+                let static_singleton = self.create_object(format!("{}::static", shape_name));
+                let shape = self.get_shape_mut(shape_id);
+                shape.static_object_id = static_singleton;
+            }
+
             self.attach_slot(static_object_id, slot.clone());
         }
         
@@ -436,7 +445,7 @@ impl Runtime {
 
     fn print_object(&self, object_id: ObjectId) {
         let object = self.get_object(object_id);
-        println!("Object {}: '{}'", object.id, object.name);
+        println!("\nObject {}: '{}'", object.id, object.name);
 
         for state_id in 1..=object.slot_states.len() as SlotStateId{
             if let Some(state) = object.get_slot_state(state_id) {
@@ -452,6 +461,7 @@ impl Runtime {
 
             }   
         }
+        println!();
     }
 
 }
@@ -461,7 +471,7 @@ fn print_hello(params: FunctionParams) -> Value {
     Value::Single(PrimitiveValue::None)
 }
 
-fn main() {
+fn test() {
     println!("Hello, world!");
 
     let mut runtime = Runtime::new();
@@ -555,4 +565,17 @@ fn main() {
     runtime.set_slot_value_array_element(obj1, &array_slot, 1, Value::Single(PrimitiveValue::Int32(42)));
     runtime.print_object(obj1);
 
+}
+
+fn read_source(path: &str) -> Result<String, std::io::Error> {
+    fs::read_to_string(path)
+}
+
+fn main() {
+    //test();
+
+    let source = read_source("/workspaces/SlotBox/src/lang.txt");
+    let tokens = tokenizer::tokenize(&source.unwrap_or_else(|_| panic!("Failed to read source file")));
+    let ast = parser::parse(tokens);
+    executor::execute(ast);
 }

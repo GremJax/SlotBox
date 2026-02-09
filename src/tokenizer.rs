@@ -1,7 +1,7 @@
 use crate::ValueKind;
 
 #[derive(Debug, Clone)]
-pub(crate) enum Token{
+pub enum Token{
     Identifier(String),
     Number(f64),
     Bool(bool),
@@ -18,11 +18,11 @@ pub(crate) enum Token{
     EOF,
 }
 
-static KEYWORDS: &[&str] = &["shape", "object", "print", "static", "let", "fn", "if", "else", "while", "return"]; 
+static KEYWORDS: &[&str] = &["attach", "detach", "shape", "object", "print", "static", "let", "fn", "if", "else", "while", "return"]; 
 static TYPES: &[&str] = &["int32", "bool", "string", "void"]; 
-static OPERATORS: &[&str] = &[":=", "=:", "+", "-", "=", "==", "!=", "->", "<", ">", "<=", ">=", "&&", "||", "!"]; 
+static OPERATORS: &[&str] = &[".", ":=", "=:", "+", "-", "=", "==", "!=", "->", "<", ">", "<=", ">=", "&&", "||", "!"]; 
 
-fn tokenize(input: &str) -> Vec<Token> {
+pub fn tokenize(input: &str) -> Vec<Token> {
     let mut tokens = Vec::new();
     let mut chars = input.chars().peekable();
 
@@ -30,7 +30,7 @@ fn tokenize(input: &str) -> Vec<Token> {
         match ch {
             ' ' | '\t' => { chars.next(); },
             '\n' => {
-                tokens.push(Token::NewLine);
+                //tokens.push(Token::NewLine);
                 chars.next();
             },
             '(' => {
@@ -89,7 +89,7 @@ fn tokenize(input: &str) -> Vec<Token> {
                         break;
                     }
                 }
-                if(KEYWORDS.contains(&identifier.as_str())) {
+                if KEYWORDS.contains(&identifier.as_str()) {
                     tokens.push(Token::Keyword(identifier));
 
                 } else if identifier == "true" || identifier == "false" {
@@ -111,7 +111,7 @@ fn tokenize(input: &str) -> Vec<Token> {
             _ => {
                 let mut operator = String::new();
                 while let Some(&ch) = chars.peek() {
-                    if ch.is_alphanumeric() || ch == '_' {
+                    if ch != ' ' && !ch.is_alphanumeric() && ch != '_' {
                         operator.push(ch);
                         chars.next();
                     } else {
@@ -121,7 +121,7 @@ fn tokenize(input: &str) -> Vec<Token> {
                 if OPERATORS.contains(&operator.as_str()) {
                     tokens.push(Token::Operator(operator));
                 } else {
-                    panic!("Unknown token: {}", operator);
+                    panic!("Unknown token: '{}'", operator);
                 }
             }
         }

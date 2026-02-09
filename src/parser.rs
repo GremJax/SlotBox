@@ -35,11 +35,11 @@ pub enum Statement {
         slot_ids: Vec<SlotId>,
         mappings: Vec<Mapping>,
     },
-    DeclareObject {
-        name: Identifier
-    },
+    DeclareObject { name: Identifier },
     Attach { object: Identifier, shape: Identifier },
     Detach { object: Identifier, shape: Identifier },
+    AddMapping { object: Identifier, from_slot: Identifier, to_slot: Identifier },
+    AttachWithRemap { object: Identifier, shape: Identifier, mappings: Vec<Mapping> },
     Print { object: Identifier },
     PrintString { string: String },
     Assign {
@@ -176,52 +176,129 @@ pub fn parse(input: Vec<Token>) -> Vec<Statement> {
                 };
             },
 
-            // Assignment/call
+            // Object Identifier
             Token::Identifier(_) => {
                 if let Some(Token::Identifier(object)) = tokens.next() {
                     if let Some(Token::Operator(op)) = tokens.peek() {
 
                         // Slot Call
-                        if op == "." {
-                            tokens.next(); // consume operator
-                            let slot = match tokens.next() {
-                                Some(Token::Identifier(name)) => name.clone(),
-                                other => panic!(
-                                    "Expected slot name after object name in slot call, got {:?}",
-                                    other
-                                ),
-                            };
-
-                            let slotOp = match tokens.next() {
-                                Some(Token::Operator(op)) => op.clone(),
-                                other => panic!(
-                                    "Expected operator after slot name in slot call, got {:?}",
-                                    other
-                                ),
-                            };
-
-                            // Assignment
-                            if slotOp == "=" {
-                                let value = match tokens.next() {
-                                    Some(Token::Number(num)) => Expression::Literal(Value::Single(PrimitiveValue::Int32(num as i32))),
-                                    Some(Token::Bool(b)) => Expression::Literal(Value::Single(PrimitiveValue::Bool(b))),
-                                    Some(Token::String(s)) => Expression::Literal(Value::Single(PrimitiveValue::String(s))),
+                        match op.as_str() {
+                            "." => {
+                                tokens.next(); // consume operator
+                                let slot = match tokens.next() {
+                                    Some(Token::Identifier(name)) => name.clone(),
                                     other => panic!(
-                                        "Expected literal value after '=' operator in slot assignment, got {:?}",
+                                        "Expected slot name after object name in slot call, got {:?}",
                                         other
                                     ),
                                 };
 
-                                statements.push(Statement::Assign { 
-                                    object, 
-                                    slot, 
-                                    value
-                                });
+                                let slot_op = match tokens.next() {
+                                    Some(Token::Operator(op)) => op.clone(),
+                                    other => panic!(
+                                        "Expected operator after slot name in slot call, got {:?}",
+                                        other
+                                    ),
+                                };
+
+                                // Assignment
+                                match slot_op.as_str() {
+                                    "=" => {
+                                        let value = match tokens.next() {
+                                            Some(Token::Number(num)) => Expression::Literal(Value::Single(PrimitiveValue::Int32(num as i32))),
+                                            Some(Token::Bool(b)) => Expression::Literal(Value::Single(PrimitiveValue::Bool(b))),
+                                            Some(Token::String(s)) => Expression::Literal(Value::Single(PrimitiveValue::String(s))),
+                                            other => panic!(
+                                                "Expected literal value after '=' operator in slot assignment, got {:?}",
+                                                other
+                                            ),
+                                        };
+
+                                        statements.push(Statement::Assign { object, slot, value });
+                                    }
+                                    "." => {
+                                        // For now, we only support simple slot access like `object.slot`, but this could be extended to support more complex expressions in the future.
+                                        panic!("Nested slot access is not supported yet");
+                                    }
+                                    other => { panic!("Unexpected operator in slot call: {:?}", other); }
+                                }
                             }
-                        }
-                        
-                        else {
-                            panic!("Unexpected operator after object name: {:?}", op);
+                            
+                            // Attach
+                            ":=" => {
+                                tokens.next(); // consume operator
+                                let shape = match tokens.next() {
+                                    Some(Token::Identifier(name)) => name.clone(),
+                                    other => panic!(
+                                        "Expected shape name after ':=' operator in attach statement, got {:?}",
+                                        other
+                                    ),
+                                };
+
+                                // Check for mappings
+                                if let Some(Token::LeftBrace) = tokens.peek() {
+                                    tokens.next(); // consume '{'
+                                    let mut mappings = Vec::new();
+
+                                    while let Some(token) = tokens.peek() {
+                                        match token {
+                                            // From slot mapping
+                                            Token::Identifier(from_slot) => {
+                                                let from_slot = from_slot.clone();
+                                                tokens.next();
+
+                                                // Expect '->' operator
+                                                if let Some(Token::Operator(op)) = tokens.next() {
+                                                    if op == "->" {
+                                                        let to_slot = match tokens.next() {
+
+                                                            // To slot mapping
+                                                            Some(Token::Identifier(name)) => name.clone(),
+                                                            other => panic!(
+                                                                "Expected slot name after '->' in mapping, got {:?}",
+                                                                other
+                                                            ),
+                                                        };
+
+                                                        mappings.push(Mapping { from_slot, to_slot });
+                                                    } else {
+                                                        panic!("Expected '->' operator in mapping, got {:?}", op);
+                                                    }
+                                                } else {
+                                                    panic!("Expected operator in mapping, got {:?}", tokens.peek());
+                                                }
+                                            },
+                                            Token::RightBrace => {
+                                                tokens.next(); // consume '}'
+                                                break;
+                                            },
+                                            _ => {
+                                                panic!("Unexpected token in mappings: {:?}", token);
+                                            }
+                                        }
+                                    }
+
+                                    statements.push(Statement::AttachWithRemap { object, shape, mappings });
+                                } else {
+                                    statements.push(Statement::Attach { object, shape });
+                                }
+                            }
+
+                            //Detach
+                            "=:" => {
+                                tokens.next(); // consume operator
+                                let shape = match tokens.next() {
+                                    Some(Token::Identifier(name)) => name.clone(),
+                                    other => panic!(
+                                        "Expected shape name after '=:' operator in detach statement, got {:?}",
+                                        other
+                                    ),
+                                };
+
+                                statements.push(Statement::Detach { object, shape });
+                            }
+
+                            _ => { panic!("Unexpected operator after object name: {:?}", op); }
                         }
                     } else {
                         panic!("Expected operator after object name, got {:?}", tokens.peek());

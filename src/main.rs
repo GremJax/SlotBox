@@ -21,7 +21,7 @@ pub enum ValueKind {
 }
 
 #[derive(Default, Debug, Clone)]
-enum PrimitiveValue {
+pub enum PrimitiveValue {
     Int32(i32),
     Float32(f32),
     uInt32(u32),
@@ -62,7 +62,7 @@ struct FunctionParams {
 type NativeFn = fn(FunctionParams) -> Value;
 
 #[derive(Debug, Clone)]
-struct Function {
+pub struct Function {
     self_type: ShapeId,
     input_types: Vec<ValueKind>,
     output_type: ValueKind,
@@ -71,7 +71,7 @@ struct Function {
 
 // Slot Id
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-struct SlotId {
+pub struct SlotId {
     shape_id: ShapeId,
     slot_num: u32,
     name: String,
@@ -79,18 +79,17 @@ struct SlotId {
     is_static: bool,
 }
 
-// Runtime Slot state
-#[derive(Debug)]
-enum Value {
-    Single(PrimitiveValue),
-    Array(Vec<Box<Value>>),
-    Empty,
+pub struct Mapping {
+    pub from_slot: SlotId,
+    pub to_slot: SlotId,
 }
 
-impl Default for Value {
-    fn default() -> Self {
-        Value::Single(PrimitiveValue::default())
-    }
+// Runtime Slot state
+#[derive(Default, Debug, Clone)]
+pub enum Value {
+    Single(PrimitiveValue),
+    Array(Vec<Box<Value>>),
+    #[default] Empty,
 }
 
 type SlotStateId = u32;
@@ -267,11 +266,19 @@ impl Runtime {
     }
 
     fn attach_slot(&mut self, object_id: ObjectId, slot: SlotId) {
+        self.attach_slot_remap(object_id, slot, None);
+    }
+
+    fn attach_slot_remap(&mut self, object_id: ObjectId, slot: SlotId, remap: Option<SlotId>) {
         let shape = self.get_shape(slot.shape_id);
         let target_slot;
         
+        if let Some(remap_slot) = remap {
+            target_slot = remap_slot.clone();
+            println!("- Will remap {} -> {} (explicit)", slot.name, target_slot.name);
+        }
         // Find default remapping if exists
-        if let Some(remapped_slot) = shape.slot_remapping.get(&slot) {
+        else if let Some(remapped_slot) = shape.slot_remapping.get(&slot) {
             target_slot = remapped_slot.clone();
             println!("- Will remap {} -> {}", slot.name, target_slot.name);
         } else {
@@ -318,6 +325,16 @@ impl Runtime {
         }
     }
 
+    fn remap_slot(&mut self, object_id: ObjectId, to: &SlotId, from: &SlotId) {
+        let object = self.get_object_mut(object_id);
+
+        if let Some(to_id) = object.slot_mapping.get(to) {
+            object.slot_mapping.insert(from.clone(), *to_id);
+        } else {
+            panic!("Target slot {} not attached to object", to.name);
+        }
+    }
+
     fn attach_shape(&mut self, object_id: ObjectId, shape_id: ShapeId) {
         let shape = self.get_shape_mut(shape_id);
         let slots: Vec<SlotId> = shape
@@ -347,6 +364,26 @@ impl Runtime {
         
         for slot in slots {
             self.detach_slot(object_id, slot);
+        }
+    }
+
+    fn attach_shape_with_remap(&mut self, object_id: ObjectId, shape_id: ShapeId, remap: &Vec<Mapping>) {
+        let shape = self.get_shape_mut(shape_id);
+        let slots: Vec<SlotId> = shape
+            .defined_slots
+            .iter()
+            .filter(|slot| !slot.is_static)
+            .cloned()
+            .collect();
+        
+        println!("Attaching shape {} to object {} with remapping", shape.name, object_id);
+        
+        for slot in slots {
+            if let Some(remapped) = remap.iter().find(|mapping| mapping.from_slot == slot).map(|mapping| mapping.to_slot.clone()) {
+                self.attach_slot_remap(object_id, slot, Some(remapped));
+            } else {
+                self.attach_slot(object_id, slot);
+            };
         }
     }
 

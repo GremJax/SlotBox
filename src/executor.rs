@@ -57,6 +57,30 @@ pub fn execute(statements: Vec<Statement>) {
                     println!("Error: Object '{}' or Shape '{}' not found", object, shape);
                 }
             },
+            Statement::AddMapping { object, to_slot, from_slot } => {
+                if let (Some(Identifier::Object(object_id)), Some(Identifier::Slot(to_slot_id)), Some(Identifier::Slot(from_slot_id))) 
+                    = (identifier_map.get(&object), identifier_map.get(&to_slot), identifier_map.get(&from_slot)) {
+                    runtime.remap_slot(*object_id, &to_slot_id, &from_slot_id);
+                } else {
+                    println!("Error: Object '{}' or Slot '{}' not found", object, to_slot);
+                }
+            },
+            Statement::AttachWithRemap { object, shape, mappings } => {
+                if let (Some(Identifier::Object(object_id)), Some(Identifier::Shape(shape_id))) = (identifier_map.get(&object), identifier_map.get(&shape)) {
+                    
+                    // Find the remapped slots for the shape and create a new mapping list
+                    let remap_mappings: Vec<crate::Mapping> = mappings.into_iter().map(|mapping| {
+                        if let (Some(Identifier::Slot(from_slot_id)), Some(Identifier::Slot(to_slot_id))) = (identifier_map.get(&mapping.from_slot), identifier_map.get(&mapping.to_slot)) {
+                            crate::Mapping { from_slot: from_slot_id.clone(), to_slot: to_slot_id.clone() }
+                        } else {
+                            panic!("Error: Slot '{}' not found for mapping", mapping.from_slot);
+                        }
+                    }).collect();
+                    runtime.attach_shape_with_remap(*object_id, *shape_id, &remap_mappings);
+                } else {
+                    println!("Error: Object '{}' or Shape '{}' not found", object, shape);
+                }
+            }
             Statement::Assign { object, slot, value } => {
                 if let Some(Identifier::Object(object_id)) = identifier_map.get(&object) {
                     if let Some(Identifier::Slot(slot_id)) = identifier_map.get(&slot) {

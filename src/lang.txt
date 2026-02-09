@@ -3,15 +3,20 @@ shape Point {
     Y int32
 }
 
+shape Box {
+    Width int32
+    Height int32
+}
+
 shape Named {
     Name string
 }
 
 object firstThing
-attach firstThing Point
+firstThing := Point
 print firstThing
 
-attach firstThing Named
+firstThing := Named
 print firstThing
 
 firstThing.X = 100
@@ -19,5 +24,11 @@ firstThing.Y = 20
 firstThing.Name = "Thing"
 print firstThing
 
-detach firstThing Point
+firstThing =: Named
+print firstThing
+
+firstThing := Box {
+    Width -> X
+    Height -> Y
+}
 print firstThing

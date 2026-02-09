@@ -1,4 +1,5 @@
 use crate::ValueKind;
+use crate::Value;
 
 #[derive(Debug, Clone)]
 pub enum Token{
@@ -9,6 +10,7 @@ pub enum Token{
     Operator(String),
     Keyword(String),
     Type(ValueKind),
+    Value(Value),
     LeftParen,
     RightParen,
     Comma,
@@ -18,7 +20,7 @@ pub enum Token{
     EOF,
 }
 
-static KEYWORDS: &[&str] = &["attach", "detach", "shape", "object", "print", "static", "let", "fn", "if", "else", "while", "return"]; 
+static KEYWORDS: &[&str] = &["shape", "object", "print", "static", "let", "fn", "if", "else", "while", "return"]; 
 static TYPES: &[&str] = &["int32", "bool", "string", "void"]; 
 static OPERATORS: &[&str] = &[".", ":=", "=:", "+", "-", "=", "==", "!=", "->", "<", ">", "<=", ">=", "&&", "||", "!"]; 
 

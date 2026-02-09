@@ -1,5 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
+pub mod ast;
+pub mod tokenizer;
+
 // Runtime Value
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 enum ValueKind {
@@ -17,34 +20,34 @@ enum ValueKind {
 }
 
 #[derive(Default, Debug, Clone)]
-enum Value {
+enum PrimitiveValue {
     Int32(i32),
     Float32(f32),
     uInt32(u32),
     Bool(bool),
     String(String),
-    ObjectId(ObjectId),
+    ObjectId(ShapeId, ObjectId),
     SlotId(SlotId),
     Pointer(ObjectId, SlotId),
     Function(Function),
     #[default] None,
 }
 
-impl Value {
+impl PrimitiveValue {
     fn is(&self, kind: &ValueKind) -> bool { self.kind() == *kind }
 
     fn kind(&self) -> ValueKind {
         match self {
-            Value::Int32(_) => ValueKind::Int32,
-            Value::Float32(_) => ValueKind::Float32,
-            Value::uInt32(_) => ValueKind::uInt32,
-            Value::Bool(_) => ValueKind::Bool,
-            Value::String(_) => ValueKind::String,
-            Value::ObjectId(_) => ValueKind::ObjectId(0), // Placeholder, actual ShapeId should be used
-            Value::SlotId(s) => ValueKind::SlotId(Box::new(s.value_type.clone())),
-            Value::Pointer(object_id, slot) => ValueKind::Pointer(*object_id, Box::new(slot.clone())),
-            Value::Function(_) => ValueKind::Function,
-            Value::None => ValueKind::None,
+            PrimitiveValue::Int32(_) => ValueKind::Int32,
+            PrimitiveValue::Float32(_) => ValueKind::Float32,
+            PrimitiveValue::uInt32(_) => ValueKind::uInt32,
+            PrimitiveValue::Bool(_) => ValueKind::Bool,
+            PrimitiveValue::String(_) => ValueKind::String,
+            PrimitiveValue::ObjectId(shape_id, _) => ValueKind::ObjectId(*shape_id),
+            PrimitiveValue::SlotId(s) => ValueKind::SlotId(Box::new(s.value_type.clone())),
+            PrimitiveValue::Pointer(object_id, slot) => ValueKind::Pointer(*object_id, Box::new(slot.clone())),
+            PrimitiveValue::Function(_) => ValueKind::Function,
+            PrimitiveValue::None => ValueKind::None,
         }
     }
 }
@@ -76,15 +79,16 @@ struct SlotId {
 }
 
 // Runtime Slot state
-enum SlotStorage {
-    Single(Value),
-    Array(Vec<Value>),
+#[derive(Debug)]
+enum Value {
+    Single(PrimitiveValue),
+    Array(Vec<Box<Value>>),
     Empty,
 }
 
-impl Default for SlotStorage {
+impl Default for Value {
     fn default() -> Self {
-        SlotStorage::Single(Value::default())
+        Value::Single(PrimitiveValue::default())
     }
 }
 
@@ -93,7 +97,7 @@ type SlotStateId = u32;
 #[derive(Default)]
 struct SlotState {
     sealed: bool,
-    storage: SlotStorage,
+    storage: Value,
 }
 
 // Shape
@@ -170,13 +174,8 @@ impl Object {
             panic!("Invalid slot ID");
         }
         let state = &mut self.slot_states[(slot_id - 1) as usize];
-        state.storage = SlotStorage::Single(value);
+        state.storage = value;
     }
-}
-
-fn print_hello(params: FunctionParams) -> Value {
-    println!("Hello from native function! Caller: {}", params.caller);
-    Value::None
 }
 
 // Runtime
@@ -376,12 +375,26 @@ impl Runtime {
         let object = self.get_object(object_id);
         if let Some(state_id) = object.slot_mapping.get(slot) {
             if let Some(state) = object.get_slot_state(*state_id) {
-                match &state.storage {
-                    SlotStorage::Single(value) => return Some(value),
-                    SlotStorage::Array(_) => panic!("Array slot access not implemented"),
-                    SlotStorage::Empty => return None, // Not present
-                }
+                return Some(&state.storage);
             }
+        }
+        None
+    }
+
+    fn get_slot_value_mut(&mut self, object_id: ObjectId, slot: &SlotId) -> Option<&mut Value> {
+        let object = self.get_object_mut(object_id);
+        if let Some(state_id) = object.slot_mapping.get(slot) {
+            let state_id_copy = *state_id;
+            if ((state_id_copy - 1) as usize) < object.slot_states.len() {
+                return Some(&mut object.slot_states[(state_id_copy - 1) as usize].storage);
+            }
+        }
+        None
+    }
+
+    fn get_slot_value_array_element(&self, object_id: ObjectId, slot: &SlotId, index: usize) -> Option<&Value> {
+        if let Some(Value::Array(arr)) = self.get_slot_value(object_id, slot) {
+            return arr.get(index).map(|boxed| boxed.as_ref());
         }
         None
     }
@@ -402,6 +415,25 @@ impl Runtime {
         }
     }
 
+    fn set_slot_value_primitive(&mut self, object_id: ObjectId, slot: &SlotId, value: PrimitiveValue) {
+        self.set_slot_value(object_id, slot, Value::Single(value));
+    }
+
+    fn set_slot_value_array(&mut self, object_id: ObjectId, slot: &SlotId, values: Vec<Value>) {
+        self.set_slot_value(object_id, slot, Value::Array(values.into_iter().map(Box::new).collect()));
+    }
+    fn set_slot_value_array_element(&mut self, object_id: ObjectId, slot: &SlotId, index: usize, value: Value) {
+        if let Some(Value::Array(arr)) = self.get_slot_value_mut(object_id, slot) {
+            if index < arr.len() {
+                arr[index] = Box::new(value);
+            } else {
+                panic!("Array index out of bounds");
+            }
+        } else {
+            panic!("Slot does not contain an array");
+        }
+    }
+
     fn print_object(&self, object_id: ObjectId) {
         let object = self.get_object(object_id);
         println!("Object {}: '{}'", object.id, object.name);
@@ -410,11 +442,7 @@ impl Runtime {
             if let Some(state) = object.get_slot_state(state_id) {
                 
                 print!("Local slot {}: ", state_id);
-                match &state.storage {
-                    SlotStorage::Single(value) => println!("{:?}", value),
-                    SlotStorage::Array(_) => println!("Array slot"),
-                    SlotStorage::Empty => println!("<empty>"),
-                }
+                println!("{:?}", &state.storage);
 
                 let mapped_slots: Vec<String> = object.slot_mapping.iter()
                     .filter(|(_, id)| **id == state_id)
@@ -428,6 +456,11 @@ impl Runtime {
 
 }
 
+fn print_hello(params: FunctionParams) -> Value {
+    println!("Hello from native function! Caller: {}", params.caller);
+    Value::Single(PrimitiveValue::None)
+}
+
 fn main() {
     println!("Hello, world!");
 
@@ -439,7 +472,7 @@ fn main() {
     let vec_y = runtime.define_slot_on_shape(vector_shape, 2, "y".to_string(), ValueKind::Int32, false);
     
     let static_field = runtime.define_slot_on_shape(vector_shape, 3, "static_field".to_string(), ValueKind::String, true);
-    runtime.set_slot_value(runtime.get_shape(vector_shape).static_object_id, &static_field, Value::String("I am static".to_string()));
+    runtime.set_slot_value(runtime.get_shape(vector_shape).static_object_id, &static_field, Value::Single(PrimitiveValue::String("I am static".to_string())));
     println!();
 
     // Position Shape
@@ -457,8 +490,8 @@ fn main() {
     println!();
 
     // Set values
-    runtime.set_slot_value(obj1, &vec_x, Value::Int32(10));
-    runtime.set_slot_value(obj1, &vec_y, Value::Int32(20));
+    runtime.set_slot_value_primitive(obj1, &vec_x, PrimitiveValue::Int32(10));
+    runtime.set_slot_value_primitive(obj1, &vec_y, PrimitiveValue::Int32(20));
     runtime.print_object(obj1);
     println!();
 
@@ -468,8 +501,8 @@ fn main() {
     println!();
 
     // Modify via position slots
-    runtime.set_slot_value(obj1, &pos_x, Value::Int32(30));
-    runtime.set_slot_value(obj1, &pos_y, Value::Int32(40));
+    runtime.set_slot_value_primitive(obj1, &pos_x, PrimitiveValue::Int32(30));
+    runtime.set_slot_value_primitive(obj1, &pos_y, PrimitiveValue::Int32(40));
     runtime.print_object(obj1);
     println!();
 
@@ -489,14 +522,14 @@ fn main() {
 
     // Execute static function
     let static_func = runtime.define_slot_on_shape(vector_shape, 4, "static_func".to_string(), ValueKind::Function, true);
-    runtime.set_slot_value(runtime.get_shape(vector_shape).static_object_id, &static_func, Value::Function(Function {
+    runtime.set_slot_value_primitive(runtime.get_shape(vector_shape).static_object_id, &static_func, PrimitiveValue::Function(Function {
         self_type: vector_shape,
         input_types: vec![],
         output_type: ValueKind::None,
         func: print_hello,
     }));
     
-    if let Some(Value::Function(func)) = runtime.get_slot_value(runtime.get_shape(vector_shape).static_object_id, &static_func) {
+    if let Some(Value::Single(PrimitiveValue::Function(func))) = runtime.get_slot_value(runtime.get_shape(vector_shape).static_object_id, &static_func) {
         let params = FunctionParams {
             caller: obj1,
             inputs: vec![],
@@ -512,5 +545,14 @@ fn main() {
 
     println!("Is Object1 a Vector? {}", runtime.is_shape(obj1, vector_shape));
     println!("Is Object2 a Vector? {}", runtime.is_shape(obj2, vector_shape));
+
+    // Arrays
+    let array_slot = runtime.define_slot_on_shape(vector_shape, 5, "array_field".to_string(), ValueKind::Array(Box::new(ValueKind::Int32)), false);
+    runtime.attach_shape(obj1, vector_shape);
+    runtime.set_slot_value_array(obj1, &array_slot, vec![Value::Single(PrimitiveValue::Int32(1)), Value::Single(PrimitiveValue::Int32(2)), Value::Single(PrimitiveValue::Int32(3))]);
+    runtime.print_object(obj1);
+
+    runtime.set_slot_value_array_element(obj1, &array_slot, 1, Value::Single(PrimitiveValue::Int32(42)));
+    runtime.print_object(obj1);
 
 }

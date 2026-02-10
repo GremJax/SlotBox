@@ -5,7 +5,7 @@ pub mod tokenizer;
 pub mod executor;
 
 // Runtime Value
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+#[derive(Default, Debug, Clone, Hash, PartialEq, Eq)]
 pub enum ValueKind {
     Int32,
     Float32,
@@ -17,7 +17,7 @@ pub enum ValueKind {
     SlotId(Box<ValueKind>),
     Pointer(ObjectId, Box<SlotId>),
     Function,
-    None
+    #[default] None
 }
 
 #[derive(Default, Debug, Clone)]

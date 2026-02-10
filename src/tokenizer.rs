@@ -10,19 +10,36 @@ pub enum Token{
     Operator(String),
     Keyword(String),
     Type(ValueKind),
-    Value(Value),
+    //Value(Value),
     LeftParen,
     RightParen,
     Comma,
     NewLine,
     LeftBrace,
     RightBrace,
+    LeftBracket,
+    RightBracket,
     EOF,
 }
 
-static KEYWORDS: &[&str] = &["shape", "object", "print", "static", "let", "fn", "if", "else", "while", "return"]; 
+static KEYWORDS: &[&str] = &["shape", "object", "print", "static", "let", "fn", "if", "else", "while", "for", "in", "break", "return", "match"]; 
 static TYPES: &[&str] = &["int32", "bool", "string", "void"]; 
-static OPERATORS: &[&str] = &[".", ":=", "=:", "+", "-", "=", "==", "!=", "->", "<", ">", "<=", ">=", "&&", "||", "!"]; 
+static OPERATORS: &[&str] = &[
+    ".",            // Dot
+    ":",            // Colon
+    "::",           // Double Colon
+    ":=", "=:",     // Attach/Detach
+    "->",           // Remap
+    "=",            // Assignment
+    "?",            // Optional
+    "+", "-", "*", "/", "%", // Arithmetic
+    "+=", "-=", "*=", "/=", "%=", // Compound Assignment
+    "==", "!=", "<", ">", "<=", ">=", // Comparison
+    "=~", "!~",     // Shape matching
+    "&&", "||", "!", // Logical
+    "...", "..<",   // Range
+    
+]; 
 
 pub fn tokenize(input: &str) -> Vec<Token> {
     let mut tokens = Vec::new();
@@ -30,6 +47,15 @@ pub fn tokenize(input: &str) -> Vec<Token> {
 
     while let Some(&ch) = chars.peek() {
         match ch {
+            '#' => {
+                // Skip single-line comment
+                while let Some(&ch) = chars.peek() {
+                    chars.next();
+                    if ch == '\n' {
+                        break;
+                    }
+                }
+            },
             ' ' | '\t' => { chars.next(); },
             '\n' => {
                 //tokens.push(Token::NewLine);
@@ -49,6 +75,14 @@ pub fn tokenize(input: &str) -> Vec<Token> {
             },
             '}' => {
                 tokens.push(Token::RightBrace);
+                chars.next();
+            },
+            '[' => {
+                tokens.push(Token::LeftBracket);
+                chars.next();
+            },
+            ']' => {
+                tokens.push(Token::RightBracket);
                 chars.next();
             },
             ',' => {

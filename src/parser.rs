@@ -6,11 +6,20 @@ use crate::ValueKind;
 type Identifier = String;
 pub enum Expression {
     Literal(Value),
+    Array(Vec<Expression>),
     Variable(Identifier),
+    UnaryOp {
+        operator: String,
+        operand: Box<Expression>,
+    },
     BinaryOp {
         left: Box<Expression>,
         operator: String,
         right: Box<Expression>,
+    },
+    SlotAccess {
+        object: Identifier,
+        slot: Identifier,
     },
     FunctionCall {
         name: Identifier,
@@ -36,6 +45,8 @@ pub enum Statement {
         mappings: Vec<Mapping>,
     },
     DeclareObject { name: Identifier },
+    //DeclareFunction { name: Identifier, params: Vec<(Identifier, ValueKind)>, return_type: ValueKind, body: Vec<Statement> },
+    //DeclareNonObject{ name: Identifier, value: PrimitiveValue },
     Attach { object: Identifier, shape: Identifier },
     Detach { object: Identifier, shape: Identifier },
     AddMapping { object: Identifier, from_slot: Identifier, to_slot: Identifier },
@@ -46,6 +57,22 @@ pub enum Statement {
         object: Identifier,
         slot: Identifier,
         value: Expression,
+    }
+}
+
+fn build_expression(tokens: &mut std::iter::Peekable<std::vec::IntoIter<Token>>) -> Expression {
+    // For simplicity, this function only handles literals and variables for now.
+    // It can be extended to handle more complex expressions in the future.
+    if let Some(token) = tokens.next() {
+        match token {
+            Token::Number(num) => Expression::Literal(Value::Single(PrimitiveValue::Int32(num as i32))),
+            Token::Bool(b) => Expression::Literal(Value::Single(PrimitiveValue::Bool(b))),
+            Token::String(s) => Expression::Literal(Value::Single(PrimitiveValue::String(s))),
+            Token::Identifier(name) => Expression::Variable(name),
+            other => panic!("Unexpected token in expression: {:?}", other),
+        }
+    } else {
+        panic!("Unexpected end of tokens while building expression");
     }
 }
 
@@ -119,48 +146,6 @@ pub fn parse(input: Vec<Token>) -> Vec<Statement> {
                 };
 
                 statements.push(Statement::DeclareObject { name: object_identifier });
-            },
-
-            // attach
-            Token::Keyword(k) if k == "attach" => {
-                tokens.next(); // consume 'attach' keyword
-                let object = match tokens.next() {
-                    Some(Token::Identifier(name)) => name.clone(),
-                    other => panic!(
-                        "Expected object name after 'attach', got {:?}",
-                        other
-                    ),
-                };
-                let shape = match tokens.next() {
-                    Some(Token::Identifier(name)) => name.clone(),
-                    other => panic!(
-                        "Expected shape name after object name in attach statement, got {:?}",
-                        other
-                    ),
-                };
-
-                statements.push(Statement::Attach { object, shape });
-            },
-
-            // detach
-            Token::Keyword(k) if k == "detach" => {
-                tokens.next(); // consume 'detach' keyword
-                let object = match tokens.next() {
-                    Some(Token::Identifier(name)) => name.clone(),
-                    other => panic!(
-                        "Expected object name after 'detach', got {:?}",
-                        other
-                    ),
-                };
-                let shape = match tokens.next() {
-                    Some(Token::Identifier(name)) => name.clone(),
-                    other => panic!(
-                        "Expected shape name after object name in detach statement, got {:?}",
-                        other
-                    ),
-                };
-
-                statements.push(Statement::Detach { object, shape });
             },
 
             // print

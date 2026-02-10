@@ -1,3 +1,5 @@
+print "hello world"
+
 shape Point {
     X int32
     Y int32
@@ -12,12 +14,19 @@ shape Named {
     Name string
 }
 
+shape Counts {
+    MyCount int32
+    #GlobalCount int32 static
+}
+
 object firstThing
 firstThing := Point
 print firstThing
 
 firstThing := Named
 print firstThing
+
+# comment :)
 
 firstThing.X = 100
 firstThing.Y = 20
@@ -31,4 +40,8 @@ firstThing := Box {
     Width -> X
     Height -> Y
 }
+print firstThing
+
+firstThing.Width = 20
+firstThing.Height = 2
 print firstThing

@@ -1,9 +1,6 @@
-print "hello world"
+using "std"
 
-shape Point {
-    X int32
-    Y int32
-}
+print "hello world"
 
 shape Box {
     Width int32
@@ -18,6 +15,12 @@ shape Counts {
     MyCount int32
     #GlobalCount int32 static
 }
+
+shape TypedThing<T> {
+    Thing T
+}
+
+print " "
 
 object firstThing
 firstThing := Point
@@ -44,4 +47,10 @@ print firstThing
 
 firstThing.Width = 20
 firstThing.Height = 2
+print firstThing
+
+firstThing := TypedThing<int32>
+print firstThing
+
+firstThing.Thing = 5
 print firstThing

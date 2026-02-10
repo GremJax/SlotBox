@@ -1,0 +1,10 @@
+print "loading standard library..."
+
+shape Object {}
+
+shape Point {
+    X int32
+    Y int32
+}
+
+print "standard library loaded"

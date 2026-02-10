@@ -32,25 +32,34 @@ pub struct Mapping {
     pub to_slot: Identifier,
 }
 
-pub struct SlotId {
+pub struct Azimuth {
     pub name: Identifier,
     pub value_type: ValueKind,
     pub is_static: bool,
 }
 
 pub enum Statement {
+    Using { 
+        package: String
+    },
     DeclareShape { 
         name: Identifier, 
-        slot_ids: Vec<SlotId>,
+        slot_ids: Vec<Azimuth>,
         mappings: Vec<Mapping>,
+    },
+    DeclareShapeWithGenerics { 
+        name: Identifier, 
+        slot_ids: Vec<Azimuth>,
+        mappings: Vec<Mapping>,
+        generics: Vec<Identifier>,
     },
     DeclareObject { name: Identifier },
     //DeclareFunction { name: Identifier, params: Vec<(Identifier, ValueKind)>, return_type: ValueKind, body: Vec<Statement> },
     //DeclareNonObject{ name: Identifier, value: PrimitiveValue },
-    Attach { object: Identifier, shape: Identifier },
+    Attach { object: Identifier, shape: Identifier, generics: Vec<ValueKind> },
     Detach { object: Identifier, shape: Identifier },
     AddMapping { object: Identifier, from_slot: Identifier, to_slot: Identifier },
-    AttachWithRemap { object: Identifier, shape: Identifier, mappings: Vec<Mapping> },
+    AttachWithRemap { object: Identifier, shape: Identifier, mappings: Vec<Mapping>, generics: Vec<ValueKind> },
     Print { object: Identifier },
     PrintString { string: String },
     Assign {
@@ -83,6 +92,17 @@ pub fn parse(input: Vec<Token>) -> Vec<Statement> {
     while let Some(token) = tokens.peek() {
         match token {
 
+            // Package import
+            Token::Keyword(k) if k == "using" => {
+                tokens.next(); // consume 'using' keyword
+                let package = match tokens.next() {
+                    Some(Token::String(name)) => name.clone(),
+                    other => panic!("Expected package name after 'using', got {:?}", other),
+                };
+
+                statements.push(Statement::Using { package: package });
+            },
+
             // Shape declaration
             Token::Keyword(k) if k == "shape" => {
                 tokens.next(); // consume 'shape' keyword
@@ -96,26 +116,65 @@ pub fn parse(input: Vec<Token>) -> Vec<Statement> {
 
                 let mut slot_ids = Vec::new();
                 let mut mappings = Vec::new();
+                let mut generics = Vec::new();
+
+                // Establish generics
+                match tokens.peek() {
+                    Some(Token::Operator(k)) if k == "<" => {
+                        tokens.next();
+
+                        // Iterate generic types
+                        while let Some(token) = tokens.next() {
+                            match token {
+                                Token::Identifier(generic_name) => {
+                                    generics.push(generic_name as Identifier);
+                                }
+                                Token::Comma => {}
+                                Token::Operator(k) if k == ">" => { break; }
+                                _ => {
+                                    panic!("Unexpected token in generic declaration: {:?}", token);
+                                }
+                            }
+                        }
+                    }
+                    other => { }
+                }
 
                 if let Some(Token::LeftBrace) = tokens.next() {
+
+                    // Define slots
                     while let Some(token) = tokens.peek() {
                         match token {
                             Token::Identifier(slot_name) => {
                                 let slot_name = slot_name.clone();
                                 tokens.next();
 
-                                if let Some(Token::Type(value_type)) = tokens.next() {
-                                    let value_type = value_type.clone();
-                                    let is_static = if let Some(Token::Keyword(k)) = tokens.peek() {
-                                        if k == "static" {
-                                            tokens.next();
-                                            true
-                                        } else { false }
-                                    } else { false };
+                                match tokens.next(){
+                                    Some(Token::Type(value_type)) => {
+                                        let value_type = value_type.clone();
+                                        let is_static = if let Some(Token::Keyword(k)) = tokens.peek() {
+                                            if k == "static" {
+                                                tokens.next();
+                                                true
+                                            } else { false }
+                                        } else { false };
 
-                                    slot_ids.push(SlotId { name: slot_name, value_type, is_static });
-                                } else {
-                                    panic!("Expected type for slot '{}'", slot_name);
+                                        slot_ids.push(Azimuth { name: slot_name, value_type, is_static });
+                                    }
+                                    Some(Token::Identifier(generic)) if generics.contains(&generic) => {
+                                        let value_type = ValueKind::Generic(generics.iter().position(|x| x == &generic).unwrap() as u8);
+                                        let is_static = if let Some(Token::Keyword(k)) = tokens.peek() {
+                                            if k == "static" {
+                                                tokens.next();
+                                                true
+                                            } else { false }
+                                        } else { false };
+
+                                        slot_ids.push(Azimuth { name: slot_name, value_type, is_static });
+                                    }
+                                    _ => {
+                                        panic!("Expected type for slot '{}'", slot_name);
+                                    }
                                 }
                             },
                             Token::RightBrace => {
@@ -131,7 +190,11 @@ pub fn parse(input: Vec<Token>) -> Vec<Statement> {
                     panic!("Expected '{{' after shape declaration");
                 }
 
-                statements.push(Statement::DeclareShape { name: shape_identifier, slot_ids, mappings });
+                if(generics.len() > 0) {
+                    statements.push(Statement::DeclareShapeWithGenerics { name: shape_identifier, slot_ids, mappings, generics });
+                } else {
+                    statements.push(Statement::DeclareShape { name: shape_identifier, slot_ids, mappings });
+                }
             },
 
             // Object declaration
@@ -220,6 +283,29 @@ pub fn parse(input: Vec<Token>) -> Vec<Statement> {
                                     ),
                                 };
 
+                                let mut generics = Vec::new();
+
+                                // Check for generics
+                                match tokens.peek(){
+                                    Some(Token::Operator(k)) if k == "<" => {
+                                        tokens.next(); // consume '<'
+                                        // Iterate generic types
+                                        while let Some(token) = tokens.next() {
+                                            match token {
+                                                Token::Type(kind) => {
+                                                    generics.push(kind);
+                                                }
+                                                Token::Comma => {}
+                                                Token::Operator(k) if k == ">" => { break; }
+                                                _ => {
+                                                    panic!("Unexpected token in generic assignment: {:?}", token);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    _ => {}
+                                }
+
                                 // Check for mappings
                                 if let Some(Token::LeftBrace) = tokens.peek() {
                                     tokens.next(); // consume '{'
@@ -263,9 +349,9 @@ pub fn parse(input: Vec<Token>) -> Vec<Statement> {
                                         }
                                     }
 
-                                    statements.push(Statement::AttachWithRemap { object, shape, mappings });
+                                    statements.push(Statement::AttachWithRemap { object, shape, mappings, generics });
                                 } else {
-                                    statements.push(Statement::Attach { object, shape });
+                                    statements.push(Statement::Attach { object, shape, generics });
                                 }
                             }
 

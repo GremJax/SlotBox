@@ -22,7 +22,8 @@ pub enum Token{
     EOF,
 }
 
-static KEYWORDS: &[&str] = &["shape", "object", "print", "static", "let", "fn", "if", "else", "while", "for", "in", "break", "return", "match"]; 
+static WHITESPACE: &[char] = &[' ', '\t', '\n', ';'];
+static KEYWORDS: &[&str] = &["using", "shape", "object", "print", "static", "let", "fn", "if", "else", "while", "for", "in", "break", "return", "match"]; 
 static TYPES: &[&str] = &["int32", "bool", "string", "void"]; 
 static OPERATORS: &[&str] = &[
     ".",            // Dot
@@ -56,7 +57,7 @@ pub fn tokenize(input: &str) -> Vec<Token> {
                     }
                 }
             },
-            ' ' | '\t' => { chars.next(); },
+            val if WHITESPACE.contains(&val) => { chars.next(); },
             '\n' => {
                 //tokens.push(Token::NewLine);
                 chars.next();
@@ -147,7 +148,7 @@ pub fn tokenize(input: &str) -> Vec<Token> {
             _ => {
                 let mut operator = String::new();
                 while let Some(&ch) = chars.peek() {
-                    if ch != ' ' && !ch.is_alphanumeric() && ch != '_' {
+                    if !WHITESPACE.contains(&ch) && !ch.is_alphanumeric() && ch != '_' {
                         operator.push(ch);
                         chars.next();
                     } else {

@@ -103,7 +103,7 @@ pub fn execute(statements: Vec<Statement>, runtime: &mut Runtime, identifier_map
 
                     if let Some(Identifier::Slot(slot_id)) = identifier_map.get(&slot) {
                         if let Expression::Literal(val) = value {
-                            runtime.set_slot_value(*object_id, &slot_id, val);
+                            runtime.set_slot_value(*object_id, slot_id.clone(), val);
                         } else {
                             println!("Error: Failed to evaluate expression for slot '{}'", slot);
                         }

@@ -21,6 +21,36 @@ pub enum ValueKind {
     #[default] None
 }
 
+impl ValueKind {
+
+    fn is_assignable_from(&self, other: ValueKind) -> bool {
+        match self {
+            ValueKind::Int32 => other == ValueKind::Int32,
+            ValueKind::Float32 => other == ValueKind::Float32,
+            ValueKind::uInt32 => other == ValueKind::uInt32,
+            ValueKind::Bool => other == ValueKind::Bool,
+            ValueKind::String => other == ValueKind::String,
+            ValueKind::ObjectId(k) => other == ValueKind::ObjectId(k.clone()),
+            ValueKind::Array(k) => match other {
+                ValueKind::Array(other_k) => k.is_assignable_from(*other_k),
+                _ => false,
+            },
+            ValueKind::Azimuth(k) => match other {
+                ValueKind::Azimuth(other_k) => k.is_assignable_from(*other_k),
+                _ => false,
+            },
+            ValueKind::Pointer(_, k) => match other {
+                ValueKind::Pointer(_, other_k) => k.value_type.is_assignable_from(other_k.value_type),
+                _ => false,
+            } 
+            ValueKind::Function => other == ValueKind::Function,
+            ValueKind::Generic(_) => true,
+            ValueKind::None => other == ValueKind::None,
+        }
+    }
+
+}
+
 type GenericId = u8;
 
 #[derive(Default, Debug, Clone)]
@@ -139,6 +169,10 @@ impl Shape {
     }
 
     fn remap_slot(&mut self, from: &Azimuth, to: &Azimuth) {
+        if !to.value_type.is_assignable_from(from.value_type.clone()) { 
+            panic!("Type mismatch: {:?} not assignable from {:?}", to.value_type, from.value_type); 
+        }
+        
         self.slot_remapping.insert(from.clone(), to.clone());
     }
 }
@@ -211,6 +245,25 @@ impl Object {
             if azimuth_state.azimuth == azimuth { return Some(slot_state_id) }
         }
         None
+    }
+
+    fn set_value(&mut self, azimuth:Azimuth, value:Value) {
+        for (azimuth_state, slot_state_id) in self.slot_mapping.clone() {
+            if azimuth_state.azimuth == azimuth {
+
+                match value.clone() {
+                    Value::Single(k) if !k.kind().is_assignable_from(azimuth_state.value_type.clone()) => {
+                        panic!("Type mismatch: {:?} not assignable from {:?}", k, azimuth_state.value_type); 
+                    },
+                    Value::Array(values) => {},
+                    _ => {},
+                }
+
+                // Slot found
+                self.set_slot_state(slot_state_id, value);
+                return
+            }
+        }
     }
 }
 
@@ -338,14 +391,24 @@ impl Runtime {
         let target_slot;
         
         if let Some(remap_slot) = remap {
+            if !generic.clone().unwrap_or(slot.value_type.clone()).is_assignable_from(remap_slot.value_type.clone()) { 
+                panic!("Type mismatch: {:?} not assignable from {:?}", slot.name, remap_slot.value_type); 
+            }
+            
             target_slot = remap_slot.clone();
             println!("- Will remap {} -> {} (explicit)", slot.name, target_slot.name);
         }
         // Find default remapping if exists
         else if let Some(remapped_slot) = shape.slot_remapping.get(&slot) {
+            if !generic.clone().unwrap_or(slot.value_type.clone()).is_assignable_from(remapped_slot.value_type.clone()) { 
+                panic!("Type mismatch: {:?} not assignable from {:?}", slot.name, remapped_slot.value_type); 
+            }
+
             target_slot = remapped_slot.clone();
             println!("- Will remap {} -> {}", slot.name, target_slot.name);
         } else {
+
+            // New slot
             target_slot = slot.clone();
         }
 
@@ -508,7 +571,7 @@ impl Runtime {
         })
     }
 
-    fn get_slot_value(&self, object_id: ObjectId, slot: &Azimuth) -> Option<&Value> {
+    fn get_slot_value(&self, object_id: ObjectId, slot: Azimuth) -> Option<&Value> {
         let object = self.get_object(object_id);
         if let Some(state_id) = object.get_slot_state_id(slot.clone()) {
             if let Some(state) = object.get_slot_state(state_id) {
@@ -518,7 +581,7 @@ impl Runtime {
         None
     }
 
-    fn get_slot_value_mut(&mut self, object_id: ObjectId, slot: &Azimuth) -> Option<&mut Value> {
+    fn get_slot_value_mut(&mut self, object_id: ObjectId, slot: Azimuth) -> Option<&mut Value> {
         let object = self.get_object_mut(object_id);
         if let Some(state_id) = object.get_slot_state_id(slot.clone()) {
             if ((state_id - 1) as usize) < object.slot_states.len() {
@@ -528,37 +591,26 @@ impl Runtime {
         None
     }
 
-    fn get_slot_value_array_element(&self, object_id: ObjectId, slot: &Azimuth, index: usize) -> Option<&Value> {
+    fn get_slot_value_array_element(&self, object_id: ObjectId, slot: Azimuth, index: usize) -> Option<&Value> {
         if let Some(Value::Array(arr)) = self.get_slot_value(object_id, slot) {
             return arr.get(index).map(|boxed| boxed.as_ref());
         }
         None
     }
 
-    fn set_slot_value(&mut self, object_id: ObjectId, slot: &Azimuth, value: Value) {
+    fn set_slot_value(&mut self, object_id: ObjectId, slot: Azimuth, value: Value) {
         let object = self.get_object_mut(object_id);
-        if let Some(state_id) = object.get_slot_state_id(slot.clone()) {
-            if let Some(state) = object.get_slot_state(state_id) {
-                if state.sealed {
-                    panic!("Slot is sealed and cannot be modified");
-                }
-                object.set_slot_state(state_id, value);
-            } else {
-                panic!("Invalid slot state ID");
-            }
-        } else {
-            panic!("Slot not attached to object");
-        }
+        object.set_value(slot, value);
     }
 
-    fn set_slot_value_primitive(&mut self, object_id: ObjectId, slot: &Azimuth, value: PrimitiveValue) {
+    fn set_slot_value_primitive(&mut self, object_id: ObjectId, slot: Azimuth, value: PrimitiveValue) {
         self.set_slot_value(object_id, slot, Value::Single(value));
     }
 
-    fn set_slot_value_array(&mut self, object_id: ObjectId, slot: &Azimuth, values: Vec<Value>) {
+    fn set_slot_value_array(&mut self, object_id: ObjectId, slot: Azimuth, values: Vec<Value>) {
         self.set_slot_value(object_id, slot, Value::Array(values.into_iter().map(Box::new).collect()));
     }
-    fn set_slot_value_array_element(&mut self, object_id: ObjectId, slot: &Azimuth, index: usize, value: Value) {
+    fn set_slot_value_array_element(&mut self, object_id: ObjectId, slot: Azimuth, index: usize, value: Value) {
         if let Some(Value::Array(arr)) = self.get_slot_value_mut(object_id, slot) {
             if index < arr.len() {
                 arr[index] = Box::new(value);

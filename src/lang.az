@@ -5,6 +5,8 @@ print "hello world"
 shape Box {
     Width int32
     Height int32
+
+    InteriorShape Object
 }
 
 shape Named {
@@ -13,7 +15,7 @@ shape Named {
 
 shape Counts {
     MyCount int32
-    #GlobalCount int32 static
+    GlobalCount int32 static = 5
 }
 
 shape TypedThing<T> {
@@ -54,3 +56,22 @@ print firstThing
 
 firstThing.Thing = 5
 print firstThing
+
+object secondThing
+secondThing := Box
+secondThing.Height = 5
+print secondThing
+
+firstThing.Width = secondThing.Height
+print firstThing
+print secondThing
+
+secondThing.InteriorShape = firstThing
+print secondThing
+
+secondThing.Height = secondThing.InteriorShape.Height
+print secondThing
+
+# Counts.GlobalCount = 5
+secondThing.Height = Counts.GlobalCount
+print secondThing

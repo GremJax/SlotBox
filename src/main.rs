@@ -349,7 +349,7 @@ impl Runtime {
 
         if is_static {
             // Define shape and id
-            let (shape_name, static_object_id) = {
+            let (shape_name, mut static_object_id) = {
                 let shape = self.get_shape_mut(shape_id);
                 (shape.name.clone(), shape.static_object_id)
             };
@@ -359,6 +359,7 @@ impl Runtime {
                 let static_singleton = self.create_object(format!("{}::static", shape_name));
                 let shape = self.get_shape_mut(shape_id);
                 shape.static_object_id = static_singleton;
+                static_object_id = shape.static_object_id;
             }
 
             self.attach_slot(static_object_id, slot.clone());
@@ -542,11 +543,11 @@ impl Runtime {
     }
 
     fn get_object(&self, id: ObjectId) -> &Object {
-        self.objects.get(&id).expect("Object not found")
+        self.objects.get(&id).expect(format!("Object {} not found", id).as_str())
     }
 
     fn get_object_mut(&mut self, id: ObjectId) -> &mut Object {
-        self.objects.get_mut(&id).expect("Object not found")
+        self.objects.get_mut(&id).expect(format!("Object {} not found", id).as_str())
     }
 
     fn get_shape(&self, id: ShapeId) -> &Shape {
@@ -661,4 +662,6 @@ fn main() {
     let tokens = tokenizer::tokenize(&source.unwrap_or_else(|_| panic!("Failed to read source file")));
     let ast = parser::parse(tokens);
     executor::execute(ast, &mut runtime, &mut HashMap::new());
+
+    println!("Program successfully executed!");
 }

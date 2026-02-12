@@ -1,4 +1,5 @@
 use crate::ObjectId;
+use crate::PrimitiveValue;
 use crate::ShapeId;
 use crate::Azimuth;
 use crate::executor;
@@ -14,6 +15,96 @@ pub enum Identifier {
     Object(ObjectId),
     Shape(ShapeId),
     Slot(Azimuth),
+}
+
+pub fn evaluate(expression:Expression, runtime: &mut Runtime, identifier_map: &HashMap<String, Identifier>) -> Value {
+    match expression {
+        Expression::Literal(value) => value,
+        Expression::Array(expressions) => {
+            let mut values = Vec::new();
+            for item in expressions {
+                values.push(Box::new(evaluate(item, runtime, identifier_map)));
+            }
+            Value::Array(values)
+        },
+        Expression::Variable(_) => todo!(),
+        Expression::UnaryOp { operator, operand } => {
+            match (operator, evaluate(*operand, runtime, identifier_map)) {
+                (op, Value::Single(PrimitiveValue::Bool(val))) if op == "!" => Value::Single(PrimitiveValue::Bool(!val)),
+                _ => Value::Empty
+            }
+        }
+        Expression::BinaryOp { left, operator, right } => {
+            match (evaluate(*left, runtime, identifier_map), operator, evaluate(*right, runtime, identifier_map)) {
+                (Value::Single(PrimitiveValue::Bool(left)), op, Value::Single(PrimitiveValue::Bool(right))) => 
+                    match op.as_str() {
+                        "==" => Value::Single(PrimitiveValue::Bool(left == right)),
+                        "!=" => Value::Single(PrimitiveValue::Bool(left != right)),
+                        "&&" => Value::Single(PrimitiveValue::Bool(left && right)),
+                        "||" => Value::Single(PrimitiveValue::Bool(left || right)),
+                        other => panic!("Invalid operator {}", other)
+                    }
+                (Value::Single(PrimitiveValue::Int32(left)), op, Value::Single(PrimitiveValue::Int32(right))) => 
+                    match op.as_str() {
+                        "==" => Value::Single(PrimitiveValue::Bool(left == right)),
+                        "!=" => Value::Single(PrimitiveValue::Bool(left != right)),
+                        "<" => Value::Single(PrimitiveValue::Bool(left < right)),
+                        ">" => Value::Single(PrimitiveValue::Bool(left > right)),
+                        "<=" => Value::Single(PrimitiveValue::Bool(left <= right)),
+                        ">=" => Value::Single(PrimitiveValue::Bool(left >= right)),
+                        
+                        "+" => Value::Single(PrimitiveValue::Int32(left + right)),
+                        "-" => Value::Single(PrimitiveValue::Int32(left - right)),
+                        "*" => Value::Single(PrimitiveValue::Int32(left * right)),
+                        "/" => Value::Single(PrimitiveValue::Int32(left / right)),
+                        "%" => Value::Single(PrimitiveValue::Int32(left % right)),
+                        other => panic!("Invalid operator {}", other)
+                    }
+                _ => Value::Empty
+            }
+        }
+        Expression::SlotAccess { object, slot } => todo!(),
+        Expression::CallStack { stack } => evaluate_call_stack(stack, runtime, identifier_map),
+    }
+}
+
+pub fn evaluate_call_stack(stack: Vec<String>, runtime: &mut Runtime, identifier_map: &HashMap<String, Identifier>) -> Value {
+let mut current_val = Value::Empty;
+    let mut shape_clarifier;
+
+    let mut taken_path = false;
+
+    for identifier in stack {
+        match identifier_map.get(&identifier)  {
+            None => panic!("Unknown identifier: {}", identifier),
+            Some(Identifier::Object(object)) => {
+                if taken_path { panic!("Invalid object access: {}", identifier) }
+                taken_path = true;
+                current_val = Value::Single(PrimitiveValue::ObjectId(0, *object));
+            },
+            Some(Identifier::Shape(shape_id)) => {
+                if(!taken_path) {
+                    let shape = runtime.get_shape(*shape_id);
+                    current_val = Value::Single(PrimitiveValue::ObjectId(*shape_id, shape.static_object_id));
+                }
+                shape_clarifier = shape_id;
+            },
+            Some(Identifier::Slot(slot)) => {
+                if slot.is_static && taken_path {
+                    panic!("Static value accessed mid call: {}", identifier);
+                }
+
+                match current_val{
+                    Value::Single(PrimitiveValue::ObjectId(_, id)) => {
+                        current_val = runtime.get_slot_value(id, slot.clone())
+                            .unwrap_or_else(|| panic!("Object does not have mapping for {}", identifier)).clone();
+                    },
+                    other => panic!("Can't get {} from {:?}", slot.name, other)
+                }
+            },
+        }
+    }
+    current_val
 }
 
 pub fn execute(statements: Vec<Statement>, runtime: &mut Runtime, identifier_map: &mut HashMap<String, Identifier>) {
@@ -43,7 +134,14 @@ pub fn execute(statements: Vec<Statement>, runtime: &mut Runtime, identifier_map
 
                 for slot_id in slot_ids {
                     let identifier = runtime.define_slot_on_shape(shape_id, slot_id.name.clone(), slot_id.value_type, slot_id.is_static);
-                    identifier_map.insert(slot_id.name.clone(), Identifier::Slot(identifier));
+                    identifier_map.insert(slot_id.name.clone(), Identifier::Slot(identifier.clone()));
+                    
+                    if let Some(expr) = slot_id.set_value {
+                        let value = evaluate(expr, runtime, identifier_map);
+                        let shape = runtime.get_shape(shape_id);
+                        println!("{} is shapes number ", shape.static_object_id);
+                        runtime.set_slot_value(shape.static_object_id, identifier, value);
+                    }
                 }
             },
             Statement::DeclareShapeWithGenerics { name, slot_ids, mappings, generics} => {
@@ -52,7 +150,14 @@ pub fn execute(statements: Vec<Statement>, runtime: &mut Runtime, identifier_map
 
                 for slot_id in slot_ids {
                     let identifier = runtime.define_slot_on_shape(shape_id, slot_id.name.clone(), slot_id.value_type, slot_id.is_static);
-                    identifier_map.insert(slot_id.name.clone(), Identifier::Slot(identifier));
+                    identifier_map.insert(slot_id.name.clone(), Identifier::Slot(identifier.clone()));
+                    
+                    if let Some(expr) = slot_id.set_value {
+                        let value = evaluate(expr, runtime, identifier_map);
+                        let shape = runtime.get_shape(shape_id);
+                        println!("{} is shapes number ", shape.static_object_id);
+                        runtime.set_slot_value(shape.static_object_id, identifier, value);
+                    }
                 }
             }
             Statement::DeclareObject { name} => {
@@ -99,14 +204,12 @@ pub fn execute(statements: Vec<Statement>, runtime: &mut Runtime, identifier_map
             }
             Statement::Assign { object, slot, value } => {
                 if let Some(Identifier::Object(object_id)) = identifier_map.get(&object) {
-                    let object = runtime.get_object(*object_id);
-
                     if let Some(Identifier::Slot(slot_id)) = identifier_map.get(&slot) {
-                        if let Expression::Literal(val) = value {
-                            runtime.set_slot_value(*object_id, slot_id.clone(), val);
-                        } else {
-                            println!("Error: Failed to evaluate expression for slot '{}'", slot);
-                        }
+
+                        let object = runtime.get_object(*object_id);
+                        let val = evaluate(value, runtime, identifier_map);
+                        runtime.set_slot_value(*object_id, slot_id.clone(), val);
+
                     } else {
                         println!("Error: Slot '{}' not found", slot);
                     }
@@ -116,6 +219,4 @@ pub fn execute(statements: Vec<Statement>, runtime: &mut Runtime, identifier_map
             },
         }
     }
-
-    println!("Program successfully executed!");
 }

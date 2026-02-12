@@ -4,6 +4,7 @@ use crate::Value;
 use crate::ValueKind;
 
 type Identifier = String;
+#[derive(Debug)]
 pub enum Expression {
     Literal(Value),
     Array(Vec<Expression>),
@@ -21,23 +22,27 @@ pub enum Expression {
         object: Identifier,
         slot: Identifier,
     },
-    FunctionCall {
-        name: Identifier,
-        args: Vec<Expression>,
-    },
+    CallStack {
+        stack: Vec<Identifier>
+    }
 }
 
+#[derive(Debug)]
 pub struct Mapping {
     pub from_slot: Identifier,
     pub to_slot: Identifier,
 }
 
+#[derive(Debug)]
 pub struct Azimuth {
     pub name: Identifier,
     pub value_type: ValueKind,
     pub is_static: bool,
+    pub set_value: Option<Expression>
 }
 
+
+#[derive(Debug)]
 pub enum Statement {
     Using { 
         package: String
@@ -70,19 +75,34 @@ pub enum Statement {
 }
 
 fn build_expression(tokens: &mut std::iter::Peekable<std::vec::IntoIter<Token>>) -> Expression {
-    // For simplicity, this function only handles literals and variables for now.
-    // It can be extended to handle more complex expressions in the future.
     if let Some(token) = tokens.next() {
         match token {
             Token::Number(num) => Expression::Literal(Value::Single(PrimitiveValue::Int32(num as i32))),
             Token::Bool(b) => Expression::Literal(Value::Single(PrimitiveValue::Bool(b))),
             Token::String(s) => Expression::Literal(Value::Single(PrimitiveValue::String(s))),
-            Token::Identifier(name) => Expression::Variable(name),
+            Token::Identifier(identifier) => build_call_stack(identifier, tokens),
             other => panic!("Unexpected token in expression: {:?}", other),
         }
     } else {
         panic!("Unexpected end of tokens while building expression");
     }
+}
+
+fn build_call_stack(first:Identifier, tokens: &mut std::iter::Peekable<std::vec::IntoIter<Token>>) -> Expression {
+    let mut call_stack = Vec::new();
+    call_stack.push(first);
+
+    while let Some(token) = tokens.peek() {
+        match token {
+            Token::Identifier(k) => {
+                call_stack.push(k.clone() as Identifier);
+                tokens.next();
+            }
+            Token::Operator(k) if k == "." => { tokens.next(); }
+            other => break
+        }
+    }
+    Expression::CallStack{ stack: call_stack }
 }
 
 pub fn parse(input: Vec<Token>) -> Vec<Statement> {
@@ -148,6 +168,8 @@ pub fn parse(input: Vec<Token>) -> Vec<Statement> {
                             Token::Identifier(slot_name) => {
                                 let slot_name = slot_name.clone();
                                 tokens.next();
+                                        
+                                let mut set_value = None;
 
                                 match tokens.next(){
                                     Some(Token::Type(value_type)) => {
@@ -155,22 +177,66 @@ pub fn parse(input: Vec<Token>) -> Vec<Statement> {
                                         let is_static = if let Some(Token::Keyword(k)) = tokens.peek() {
                                             if k == "static" {
                                                 tokens.next();
+
+                                                // set static value
+                                                match tokens.peek() {
+                                                    Some(Token::Operator(k)) if k == "=" => {
+                                                        tokens.next();
+                                                        set_value = Some(build_expression(&mut tokens));
+                                                    }
+                                                    _ => {}
+                                                }
+
                                                 true
                                             } else { false }
                                         } else { false };
 
-                                        slot_ids.push(Azimuth { name: slot_name, value_type, is_static });
+                                        slot_ids.push(Azimuth { name: slot_name, value_type, is_static, set_value });
                                     }
                                     Some(Token::Identifier(generic)) if generics.contains(&generic) => {
                                         let value_type = ValueKind::Generic(generics.iter().position(|x| x == &generic).unwrap() as u8);
+
                                         let is_static = if let Some(Token::Keyword(k)) = tokens.peek() {
                                             if k == "static" {
                                                 tokens.next();
+
+                                                // set static value
+                                                match tokens.peek() {
+                                                    Some(Token::Operator(k)) if k == "=" => {
+                                                        tokens.next();
+                                                        set_value = Some(build_expression(&mut tokens));
+                                                    }
+                                                    _ => {}
+                                                }
+                                                
                                                 true
                                             } else { false }
                                         } else { false };
 
-                                        slot_ids.push(Azimuth { name: slot_name, value_type, is_static });
+                                        slot_ids.push(Azimuth { name: slot_name, value_type, is_static, set_value });
+                                    },
+                                    Some(Token::Identifier(shape)) => {
+                                        // NEED SHAPE ID IDENTIFIER CHECKING HERE
+                                        let value_type = ValueKind::ObjectId(0);
+
+                                        let is_static = if let Some(Token::Keyword(k)) = tokens.peek() {
+                                            if k == "static" {
+                                                tokens.next();
+
+                                                // set static value
+                                                match tokens.peek() {
+                                                    Some(Token::Operator(k)) if k == "=" => {
+                                                        tokens.next();
+                                                        set_value = Some(build_expression(&mut tokens));
+                                                    }
+                                                    _ => {}
+                                                }
+                                                
+                                                true
+                                            } else { false }
+                                        } else { false };
+
+                                        slot_ids.push(Azimuth { name: slot_name, value_type, is_static, set_value });
                                     }
                                     _ => {
                                         panic!("Expected type for slot '{}'", slot_name);
@@ -252,16 +318,7 @@ pub fn parse(input: Vec<Token>) -> Vec<Statement> {
                                 // Assignment
                                 match slot_op.as_str() {
                                     "=" => {
-                                        let value = match tokens.next() {
-                                            Some(Token::Number(num)) => Expression::Literal(Value::Single(PrimitiveValue::Int32(num as i32))),
-                                            Some(Token::Bool(b)) => Expression::Literal(Value::Single(PrimitiveValue::Bool(b))),
-                                            Some(Token::String(s)) => Expression::Literal(Value::Single(PrimitiveValue::String(s))),
-                                            other => panic!(
-                                                "Expected literal value after '=' operator in slot assignment, got {:?}",
-                                                other
-                                            ),
-                                        };
-
+                                        let value = build_expression(&mut tokens);
                                         statements.push(Statement::Assign { object, slot, value });
                                     }
                                     "." => {
@@ -388,5 +445,6 @@ pub fn parse(input: Vec<Token>) -> Vec<Statement> {
         }
     }
     
+    println!("{:?}", statements);
     statements
 }   

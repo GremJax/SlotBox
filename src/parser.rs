@@ -381,6 +381,6 @@ pub fn parse(input: Vec<Token>) -> Vec<Statement> {
         }
     }
     
-    println!("{:?}", statements);
+    println!("\n Parsed Ast: \n{:?}", statements);
     statements
 }

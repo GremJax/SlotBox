@@ -39,7 +39,7 @@ impl Operator {
 pub enum Keyword {
     Using,
     Shape, Let,
-    Static, Func, Sealed,
+    Static, Func, Sealed, PSelf,
     If, Else, Switch,
     While, For, In,
     Break, Return, Continue,
@@ -153,6 +153,7 @@ pub fn tokenize(input: &str) -> Vec<Token> {
                     "let" => Token::Keyword(Keyword::Let),
                     "static" => Token::Keyword(Keyword::Static),
                     "func" => Token::Keyword(Keyword::Func),
+                    "self" => Token::Keyword(Keyword::PSelf),
                     "sealed" => Token::Keyword(Keyword::Sealed),
                     "if" => Token::Keyword(Keyword::If),
                     "else" => Token::Keyword(Keyword::Else),

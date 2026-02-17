@@ -22,6 +22,7 @@ pub struct AzimuthInfo {
     pub name: Identifier,
     pub is_static: bool,
     pub shape_id: ShapeId,
+    pub default_value: Box<Option<ResolvedExpression>>,
     pub value_type: ValueKind,
 }
 
@@ -171,7 +172,7 @@ impl Analyzer {
             next_scope_id: 1,
             next_shape_id: 0,
             next_azimuth_id: 0,
-            next_object_id: 0,
+            next_object_id: 1,
         };
         analyzer.scopes.push(global);
         analyzer
@@ -233,10 +234,16 @@ impl Analyzer {
         let mut has_static = false;
 
         for azimuth in slot_ids {
+            let default_value = match azimuth.set_value {
+                Some(expr) => Some(self.resolve_expression(expr, scope)),
+                _ => None,
+            };
+
             let symbol = Symbol::Azimuth(AzimuthInfo {
                 id: az_id,
                 name: azimuth.name,
                 shape_id: id,
+                default_value: Box::new(default_value),
                 is_static: azimuth.is_static,
                 value_type: self.resolve_shape_expression(azimuth.value_type, scope).kind(),
             });
@@ -372,7 +379,11 @@ impl Analyzer {
                     },
 
                     // Default
-                    (left, right) => ResolvedExpression::BinaryOp{left: Box::new(left), operator, right: Box::new(right)}
+                    (left, right) => {
+
+
+                        ResolvedExpression::BinaryOp{left: Box::new(left), operator, right: Box::new(right)}
+                    }
                 }
             }
 
@@ -486,7 +497,7 @@ impl Analyzer {
             resolved.push(self.resolve_statement(statement, 0));
         }
     
-        println!("{:?}", resolved);
+        println!("\n Resolved Ast: \n{:?}", resolved);
         resolved
     }
 }

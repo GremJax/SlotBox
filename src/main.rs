@@ -21,6 +21,7 @@ pub enum ValueKind {
     Shape(ShapeInstance),
     Array(Box<ValueKind>),
     Azimuth(Box<ValueKind>),
+    Option(Box<ValueKind>),
     Pointer(ObjectId, Box<Azimuth>),
     Function,
     Generic(GenericId),
@@ -49,6 +50,7 @@ impl ValueKind {
                 ValueKind::Pointer(_, other_k) => k.value_type.is_assignable_from(other_k.value_type),
                 _ => false,
             } 
+            ValueKind::Option(k) => k.is_assignable_from(other),
             ValueKind::Function => other == ValueKind::Function,
             ValueKind::Generic(_) => true,
             ValueKind::None => other == ValueKind::None,
@@ -290,6 +292,7 @@ impl Object {
                 return
             }
         }
+        panic!("No such azimuth {:?} to assign to {:?}", azimuth, value);
     }
 }
 
@@ -318,8 +321,8 @@ impl Runtime {
             azimuths: Vec::new(),
             objects: Vec::new(),
             next_object_id: 1,
-            next_shape_id: 1,
-            next_azimuth_id: 1,
+            next_shape_id: 0,
+            next_azimuth_id: 0,
         };
         runtime.objects.push(global);
         runtime
@@ -340,12 +343,37 @@ impl Runtime {
     }
 
     fn create_shape(&mut self, info: ShapeInfo) {
+        let static_object_id = match *info.static_id {
+            Some(Symbol::Object(info)) => {
+                let id = info.id.clone();
+                self.create_object(info);
+                id
+            }
+            _ => 0,   
+        };
+
         let mut az_ids = Vec::new();
         for symbol in &info.azimuths {
             match symbol {
                 Symbol::Azimuth(info) => {
                     az_ids.push(info.id.clone());
                     self.create_azimuth(info.clone());
+
+                    if info.is_static {
+                        // Allocate static slot
+                        let object = self.get_object_mut(static_object_id);
+                        let az_state = AzimuthState{ azimuth: info.id.clone(), value_type: info.value_type.clone() };
+                        let state_id = object.allocate_slot();
+                        object.slot_mapping.push((az_state, state_id));
+
+                        match *info.default_value.clone() {
+                            Some(expr) => {
+                                let evaluated: Value = executor::evaluate(self, expr);
+                                self.set_slot_value(static_object_id, info.id, evaluated);
+                            }
+                            _ => {}
+                        }
+                    }
                 }
                 _ => panic!()
             }
@@ -356,7 +384,7 @@ impl Runtime {
             name: info.name,
             azimuths: az_ids,
             def_mappings: HashMap::new(),
-            static_object_id: 0,
+            static_object_id: static_object_id,
             num_generics: info.generics.len() as u32,
         };
 
@@ -620,7 +648,8 @@ impl Runtime {
 
     fn set_slot_value(&mut self, object_id: ObjectId, slot: AzimuthId, value: Value) {
         let object = self.get_object_mut(object_id);
-        object.set_value(slot, value);
+        object.set_value(slot, value.clone());
+        println!("Set obj{:?}.{:?} to {:?}", object.name, slot, value);
     }
 
     fn set_slot_value_primitive(&mut self, object_id: ObjectId, slot: AzimuthId, value: PrimitiveValue) {

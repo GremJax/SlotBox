@@ -72,6 +72,8 @@ print secondThing
 secondThing.Height = secondThing.InteriorShape.Height
 print secondThing
 
-//Counts.GlobalCount = 5
+print Counts
+
+Counts.GlobalCount = 5
 secondThing.Height = Counts.GlobalCount
 print secondThing

@@ -1,8 +1,11 @@
 use std::{collections::{HashMap, HashSet}, fs};
 
+use crate::analyzer::{ObjectInfo, ShapeInfo};
+
 pub mod parser;
 pub mod tokenizer;
 pub mod executor;
+pub mod analyzer;
 
 // Runtime Value
 #[derive(Default, Debug, Clone, Hash, PartialEq, Eq)]
@@ -108,7 +111,7 @@ pub type AzimuthId = u32;
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct Azimuth {
     shape_id: ShapeId,
-    slot_num: AzimuthId,
+    id: AzimuthId,
     name: String,
     value_type: ValueKind,
     is_static: bool,
@@ -116,13 +119,14 @@ pub struct Azimuth {
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct AzimuthState {
-    azimuth: Azimuth,
+    azimuth: AzimuthId,
     value_type: ValueKind,
 }
 
+#[derive(Default, Debug, Clone)]
 pub struct Mapping {
-    pub from_slot: Azimuth,
-    pub to_slot: Azimuth,
+    pub from: AzimuthId,
+    pub to: AzimuthId,
 }
 
 // Runtime Slot state
@@ -131,6 +135,24 @@ pub enum Value {
     Single(PrimitiveValue),
     Array(Vec<Box<Value>>),
     #[default] Empty,
+}
+
+impl From<bool> for Value {
+    fn from(value: bool) -> Self {
+        Value::Single(PrimitiveValue::Bool(value))
+    }
+}
+
+impl From<i32> for Value {
+    fn from(value: i32) -> Self {
+        Value::Single(PrimitiveValue::Int32(value))
+    }
+}
+
+impl From<String> for Value {
+    fn from(value: String) -> Self {
+        Value::Single(PrimitiveValue::String(value))
+    }
 }
 
 type SlotStateId = u32;
@@ -143,37 +165,35 @@ struct SlotState {
 
 // Shape
 pub type ShapeId = u32;
-
 pub struct Shape {
     id: ShapeId,
     name: String,
     
-    num_generics: u8,
-    defined_slots: HashSet<Azimuth>,
-    slot_remapping: HashMap<Azimuth, Azimuth>,
+    azimuths: Vec<AzimuthId>,
+    def_mappings: HashMap<AzimuthId, AzimuthId>,
     static_object_id: ObjectId,
 }
 
 impl Shape {
-    fn define_slot(&mut self, num: AzimuthId, name: String, 
+    fn define_slot(&mut self, id: AzimuthId, name: String, 
         kind: ValueKind, is_static: bool) -> Azimuth {
         let slot = Azimuth {
             shape_id: self.id,
-            slot_num: num,
+            id: id.clone(),
             name: format!("{}.{}", self.name, name),
             value_type: kind,
             is_static,
         };
-        self.defined_slots.insert(slot.clone());
+        self.azimuths.push(id);
         slot
     }
 
-    fn remap_slot(&mut self, from: &Azimuth, to: &Azimuth) {
-        if !to.value_type.is_assignable_from(from.value_type.clone()) { 
-            panic!("Type mismatch: {:?} not assignable from {:?}", to.value_type, from.value_type); 
-        }
+    fn remap_slot(&mut self, from: AzimuthId, to: AzimuthId) {
+        //if !to.value_type.is_assignable_from(from.value_type.clone()) { 
+        //    panic!("Type mismatch: {:?} not assignable from {:?}", to.value_type, from.value_type); 
+        //}
         
-        self.slot_remapping.insert(from.clone(), to.clone());
+        self.def_mappings.insert(from.clone(), to.clone());
     }
 }
 
@@ -223,14 +243,14 @@ impl Object {
         state.storage = value;
     }
 
-    fn has_azimuth(&self, azimuth: Azimuth) -> bool {
+    fn has_azimuth(&self, azimuth: AzimuthId) -> bool {
         for (azimuth_state, _) in self.slot_mapping.clone() {
             if azimuth_state.azimuth == azimuth { return true }
         }
         false
     }
 
-    fn remove_azimuth(&mut self, azimuth: Azimuth)  -> Option<SlotStateId> {
+    fn remove_azimuth(&mut self, azimuth: AzimuthId)  -> Option<SlotStateId> {
         for i in (0..self.slot_mapping.len()).rev() {
             if self.slot_mapping[i].0.azimuth == azimuth {
                 let id = self.slot_mapping.remove(i).1;
@@ -240,14 +260,14 @@ impl Object {
         None
     }
 
-    fn get_slot_state_id(&self, azimuth: Azimuth) -> Option<SlotStateId> {
+    fn get_slot_state_id(&self, azimuth: AzimuthId) -> Option<SlotStateId> {
         for (azimuth_state, slot_state_id) in self.slot_mapping.clone() {
             if azimuth_state.azimuth == azimuth { return Some(slot_state_id) }
         }
         None
     }
 
-    fn set_value(&mut self, azimuth:Azimuth, value:Value) {
+    fn set_value(&mut self, azimuth:AzimuthId, value:Value) {
         for (azimuth_state, slot_state_id) in self.slot_mapping.clone() {
             if azimuth_state.azimuth == azimuth {
 
@@ -269,8 +289,9 @@ impl Object {
 
 // Runtime
 pub struct Runtime {
-    objects: HashMap<ObjectId, Object>,
-    shapes: HashMap<ShapeId, Shape>,    
+    shapes: Vec<Shape>,    
+    azimuths: Vec<Azimuth>,
+    objects: Vec<Object>,
     next_object_id: ObjectId,
     next_shape_id: ShapeId,
     next_azimuth_id: AzimuthId,
@@ -280,8 +301,9 @@ pub struct Runtime {
 impl Runtime {
     fn new() -> Self {
         Runtime {
-            objects: HashMap::new(),
-            shapes: HashMap::new(),
+            shapes: Vec::new(),
+            azimuths: Vec::new(),
+            objects: Vec::new(),
             next_object_id: 1,
             next_shape_id: 1,
             next_azimuth_id: 1,
@@ -296,48 +318,36 @@ impl Runtime {
         }
     }
 
-    fn create_object(&mut self, name: String) -> ObjectId {
-        let id = self.next_object_id;
-        self.next_object_id += 1;
+    fn create_object(&mut self, info: ObjectInfo) {
         let object = Object {
-            id,
-            name,
+            id: info.id,
+            name: info.name,
             slot_mapping: Vec::new(),
             slot_states: Vec::new(),
             free_slots: Vec::new(),
             next_slot_state_id: 1,
         };
 
-        println!("Created object with ID {}, '{}'", id, object.name);
-        self.objects.insert(id, object);
-        id
+        println!("Created object with ID {}, '{}'", object.id, object.name);
+        self.objects.insert(object.id as usize, object);
     }
 
-    fn create_shape(&mut self, name: String) -> ShapeId {
-        self.create_shape_with_generics(name, 0)
-    }
-
-    fn create_shape_with_generics(&mut self, name: String, num_generics: u8) -> ShapeId {
-        let id = self.next_shape_id;
-        self.next_shape_id += 1;
-
+    fn create_shape(&mut self, info: ShapeInfo) {
         let shape = Shape {
-            id,
-            name,
-            num_generics,
-            defined_slots: HashSet::new(),
-            slot_remapping: HashMap::new(),
+            id: info.id,
+            name: info.name,
+            azimuths: info.azimuths,
+            def_mappings: HashMap::new(),
             static_object_id: 0,
         };
 
-        println!("Created shape with ID {}, '{}'", id, shape.name);
+        println!("Created shape with ID {}, '{}'", shape.id, shape.name);
 
-        self.shapes.insert(id, shape);
-        id
+        self.shapes.insert(shape.id as usize, shape);
     }
 
     fn define_slot_on_shape(&mut self, shape_id: ShapeId, name: String, 
-        kind: ValueKind, is_static: bool) -> Azimuth {
+        kind: ValueKind, is_static: bool) -> AzimuthId {
             
         let next_num = self.next_azimuth_id.clone();
         self.next_azimuth_id += 1;
@@ -356,17 +366,20 @@ impl Runtime {
 
             // Create static singleton if does not exist
             if static_object_id == 0 {
-                let static_singleton = self.create_object(format!("{}::static", shape_name));
+                let static_id = 0 - self.shapes.len() as ObjectId;
+                self.create_object(ObjectInfo { id: static_id, name: format!("{}::Static", shape_name) });
                 let shape = self.get_shape_mut(shape_id);
-                shape.static_object_id = static_singleton;
-                static_object_id = shape.static_object_id;
+                shape.static_object_id = static_id;
+                static_object_id = static_id;
             }
 
-            self.attach_slot(static_object_id, slot.clone());
+            self.attach_slot(static_object_id, slot.id);
         }
         
         println!("Defined slot {}", slot.name);
-        slot
+        let id = slot.id.clone();
+        self.azimuths.insert(slot.id as usize, slot);
+        id
     }
 
     fn define_remapping_on_shape(&mut self, shape_id: ShapeId, from: &Azimuth, to: &Azimuth) {
@@ -375,29 +388,31 @@ impl Runtime {
         println!("Mapping {} -> {} in shape {}", from.name, to.name, shape.name);
     }
 
-    fn attach_slot(&mut self, object_id: ObjectId, slot: Azimuth) {
+    fn attach_slot(&mut self, object_id: ObjectId, slot: AzimuthId) {
         self.attach_slot_remap(object_id, slot, None);
     }
 
-    fn attach_slot_generic(&mut self, object_id: ObjectId, slot: Azimuth, generic: Option<ValueKind>) {
+    fn attach_slot_generic(&mut self, object_id: ObjectId, slot: AzimuthId, generic: Option<ValueKind>) {
         self.attach_slot_remap_generic(object_id, slot, None, generic);
     }
     
-    fn attach_slot_remap(&mut self, object_id: ObjectId, slot: Azimuth, remap: Option<Azimuth>) {
+    fn attach_slot_remap(&mut self, object_id: ObjectId, slot: AzimuthId, remap: Option<AzimuthId>) {
         self.attach_slot_remap_generic(object_id, slot, remap, None);
     }
 
-    fn attach_slot_remap_generic(&mut self, object_id: ObjectId, slot: Azimuth, remap: Option<Azimuth>, generic: Option<ValueKind>) {
-        let shape = self.get_shape(slot.shape_id);
+    fn attach_slot_remap_generic(&mut self, object_id: ObjectId, azimuth_id: AzimuthId, remap: Option<AzimuthId>, generic: Option<ValueKind>) {
+        let azimuth = self.get_azimuth(azimuth_id);
+        let shape = self.get_shape(azimuth.shape_id);
         let target_slot;
         
-        if let Some(remap_slot) = remap {
-            if !generic.clone().unwrap_or(slot.value_type.clone()).is_assignable_from(remap_slot.value_type.clone()) { 
-                panic!("Type mismatch: {:?} not assignable from {:?}", slot.name, remap_slot.value_type); 
+        if let Some(remap_id) = remap {
+            let remap_slot = self.get_azimuth(remap_id);
+            if !generic.clone().unwrap_or(azimuth.value_type.clone()).is_assignable_from(remap_slot.value_type.clone()) { 
+                panic!("Type mismatch: {:?} not assignable from {:?}", azimuth.name, remap_slot.value_type); 
             }
             
             target_slot = remap_slot.clone();
-            println!("- Will remap {} -> {} (explicit)", slot.name, target_slot.name);
+            println!("- Will remap {} -> {} (explicit)", azimuth.name, target_slot.name);
         }
         // Find default remapping if exists
         else if let Some(remapped_slot) = shape.slot_remapping.get(&slot) {
@@ -442,7 +457,7 @@ impl Runtime {
         object.slot_mapping.push((azimuth_state, state_id));
     }
 
-    fn detach_slot(&mut self, object_id: ObjectId, slot: Azimuth) {
+    fn detach_slot(&mut self, object_id: ObjectId, slot: AzimuthId) {
         let object = self.get_object_mut(object_id);
 
         if let Some(state_id) = object.remove_azimuth(slot) {
@@ -456,15 +471,16 @@ impl Runtime {
         }
     }
 
-    fn remap_slot(&mut self, object_id: ObjectId, to: &Azimuth, from: &Azimuth) {
+    fn remap_slot(&mut self, object_id: ObjectId, to: AzimuthId, from: AzimuthId) {
         let object = self.get_object_mut(object_id);
+        let to_azimuth = self.get_azimuth(to);
 
         if let Some(to_id) = object.get_slot_state_id(to.clone()) {
             
-            let azimuth_state = AzimuthState{azimuth: from.clone(), value_type: to.value_type.clone()};
+            let azimuth_state = AzimuthState{azimuth: from.clone(), value_type: to_azimuth.value_type.clone()};
             object.slot_mapping.push((azimuth_state, to_id));
         } else {
-            panic!("Target slot {} not attached to object", to.name);
+            panic!("Target slot {} not attached to object", to_azimuth.name);
         }
     }
 
@@ -475,8 +491,9 @@ impl Runtime {
         }
 
         let slots: Vec<Azimuth> = shape
-            .defined_slots
+            .azimuths
             .iter()
+            .map(|id| self.get_azimuth(*id))
             .filter(|slot| !slot.is_static)
             .cloned()
             .collect();
@@ -491,23 +508,17 @@ impl Runtime {
                 }
             }
 
-            self.attach_slot_generic(object_id, slot, generic_type);
+            self.attach_slot_generic(object_id, slot.id, generic_type);
         }
     }
 
     fn detach_shape(&mut self, object_id: ObjectId, shape_id: ShapeId) {
-        let shape = self.get_shape_mut(shape_id);
-        let slots: Vec<Azimuth> = shape
-            .defined_slots
-            .iter()
-            .filter(|slot| !slot.is_static)
-            .cloned()
-            .collect();
+        let shape = self.get_shape(shape_id);
         
         println!("Detaching shape {} from object {}", shape.name, object_id);
         
-        for slot in slots {
-            self.detach_slot(object_id, slot);
+        for azimuth in &shape.azimuths {
+            self.detach_slot(object_id, *azimuth);
         }
     }
 
@@ -534,7 +545,7 @@ impl Runtime {
                 }
             }
 
-            if let Some(remapped) = remap.iter().find(|mapping| mapping.from_slot == slot).map(|mapping| mapping.to_slot.clone()) {
+            if let Some(remapped) = remap.iter().find(|mapping| mapping.from == slot).map(|mapping| mapping.to.clone()) {
                 self.attach_slot_remap_generic(object_id, slot, Some(remapped), generic_type);
             } else {
                 self.attach_slot_generic(object_id, slot, generic_type);
@@ -543,36 +554,44 @@ impl Runtime {
     }
 
     fn get_object(&self, id: ObjectId) -> &Object {
-        self.objects.get(&id).expect(format!("Object {} not found", id).as_str())
+        self.objects.get(id as usize).expect(format!("Object {} not found", id).as_str())
     }
 
     fn get_object_mut(&mut self, id: ObjectId) -> &mut Object {
-        self.objects.get_mut(&id).expect(format!("Object {} not found", id).as_str())
+        self.objects.get_mut(id as usize).expect(format!("Object {} not found", id).as_str())
+    }
+
+    fn get_azimuth(&self, id: AzimuthId) -> &Azimuth {
+        self.azimuths.get(id as usize).expect(format!("Azimuth {} not found", id).as_str())
+    }
+
+    fn get_azimuth_mut(&mut self, id: AzimuthId) -> &Azimuth {
+        self.azimuths.get_mut(id as usize).expect(format!("Azimuth {} not found", id).as_str())
     }
 
     fn get_shape(&self, id: ShapeId) -> &Shape {
-        self.shapes.get(&id).expect("Shape not found")
+        self.shapes.get(id as usize).expect("Shape not found")
     }
 
     fn get_shape_mut(&mut self, id: ShapeId) -> &mut Shape {
-        self.shapes.get_mut(&id).expect("Shape not found")
+        self.shapes.get_mut(id as usize).expect("Shape not found")
     }
 
     fn is_shape(&self, object_id: ObjectId, shape_id: ShapeId) -> bool {
         let object = self.get_object(object_id);
         let shape = self.get_shape(shape_id);
 
-        shape.defined_slots.iter().all(|slot| {
+        shape.azimuths.iter().map(|id| self.get_azimuth(*id)).all(|slot| {
             if slot.is_static {
                 let static_object = self.get_object(shape.static_object_id);
-                static_object.has_azimuth(slot.clone())
+                object.has_azimuth(slot.id) || static_object.has_azimuth(slot.id)
             } else {
-                object.has_azimuth(slot.clone())
+                object.has_azimuth(slot.id)
             }
         })
     }
 
-    fn get_slot_value(&self, object_id: ObjectId, slot: Azimuth) -> Option<&Value> {
+    fn get_slot_value(&self, object_id: ObjectId, slot: AzimuthId) -> Option<&Value> {
         let object = self.get_object(object_id);
         if let Some(state_id) = object.get_slot_state_id(slot.clone()) {
             if let Some(state) = object.get_slot_state(state_id) {
@@ -582,7 +601,7 @@ impl Runtime {
         None
     }
 
-    fn get_slot_value_mut(&mut self, object_id: ObjectId, slot: Azimuth) -> Option<&mut Value> {
+    fn get_slot_value_mut(&mut self, object_id: ObjectId, slot: AzimuthId) -> Option<&mut Value> {
         let object = self.get_object_mut(object_id);
         if let Some(state_id) = object.get_slot_state_id(slot.clone()) {
             if ((state_id - 1) as usize) < object.slot_states.len() {
@@ -592,26 +611,26 @@ impl Runtime {
         None
     }
 
-    fn get_slot_value_array_element(&self, object_id: ObjectId, slot: Azimuth, index: usize) -> Option<&Value> {
+    fn get_slot_value_array_element(&self, object_id: ObjectId, slot: AzimuthId, index: usize) -> Option<&Value> {
         if let Some(Value::Array(arr)) = self.get_slot_value(object_id, slot) {
             return arr.get(index).map(|boxed| boxed.as_ref());
         }
         None
     }
 
-    fn set_slot_value(&mut self, object_id: ObjectId, slot: Azimuth, value: Value) {
+    fn set_slot_value(&mut self, object_id: ObjectId, slot: AzimuthId, value: Value) {
         let object = self.get_object_mut(object_id);
         object.set_value(slot, value);
     }
 
-    fn set_slot_value_primitive(&mut self, object_id: ObjectId, slot: Azimuth, value: PrimitiveValue) {
+    fn set_slot_value_primitive(&mut self, object_id: ObjectId, slot: AzimuthId, value: PrimitiveValue) {
         self.set_slot_value(object_id, slot, Value::Single(value));
     }
 
-    fn set_slot_value_array(&mut self, object_id: ObjectId, slot: Azimuth, values: Vec<Value>) {
+    fn set_slot_value_array(&mut self, object_id: ObjectId, slot: AzimuthId, values: Vec<Value>) {
         self.set_slot_value(object_id, slot, Value::Array(values.into_iter().map(Box::new).collect()));
     }
-    fn set_slot_value_array_element(&mut self, object_id: ObjectId, slot: Azimuth, index: usize, value: Value) {
+    fn set_slot_value_array_element(&mut self, object_id: ObjectId, slot: AzimuthId, index: usize, value: Value) {
         if let Some(Value::Array(arr)) = self.get_slot_value_mut(object_id, slot) {
             if index < arr.len() {
                 arr[index] = Box::new(value);
@@ -635,7 +654,7 @@ impl Runtime {
 
                 let mapped_slots: Vec<String> = object.slot_mapping.iter()
                     .filter(|(_, id)| *id == state_id)
-                    .map(|(slot, _)| slot.azimuth.name.clone())
+                    .map(|(slot, _)| self.get_azimuth(slot.azimuth).name.clone())
                     .collect();
                 println!("  Mapped slots: {}", mapped_slots.join(", "));
 
@@ -661,7 +680,9 @@ fn main() {
     let source = read_source("/workspaces/SlotBox/src/lang.az");
     let tokens = tokenizer::tokenize(&source.unwrap_or_else(|_| panic!("Failed to read source file")));
     let ast = parser::parse(tokens);
-    executor::execute(ast, &mut runtime, &mut HashMap::new());
+    let resolved_ast = analyzer::analyze(ast);
+
+    executor::execute(&mut runtime, resolved_ast);
 
     println!("Program successfully executed!");
 }

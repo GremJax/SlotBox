@@ -5,7 +5,7 @@ print "hello world"
 shape Box {
     Width int32
     Height int32
-
+    
     InteriorShape Object
 }
 
@@ -24,14 +24,14 @@ shape TypedThing<T> {
 
 print " "
 
-object firstThing
+let firstThing
 firstThing := Point
 print firstThing
 
 firstThing := Named
 print firstThing
 
-# comment :)
+// comment :)
 
 firstThing.X = 100
 firstThing.Y = 20
@@ -57,7 +57,7 @@ print firstThing
 firstThing.Thing = 5
 print firstThing
 
-object secondThing
+let secondThing
 secondThing := Box
 secondThing.Height = 5
 print secondThing
@@ -72,6 +72,6 @@ print secondThing
 secondThing.Height = secondThing.InteriorShape.Height
 print secondThing
 
-# Counts.GlobalCount = 5
+Counts.GlobalCount = 5
 secondThing.Height = Counts.GlobalCount
 print secondThing

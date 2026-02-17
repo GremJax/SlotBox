@@ -1,19 +1,21 @@
 use crate::tokenizer::Operator;
-use crate::{Mapping, ObjectId, PrimitiveValue, Runtime, ShapeId, Value, analyzer, executor, parser, tokenizer};
-use crate::analyzer::{ResolvedExpression, ResolvedShapeExpression, ResolvedStatement, Scope, Symbol};
-use crate::parser::{Statement};
-
+use crate::{
+    Mapping, ObjectId, PrimitiveValue, Runtime, ShapeId, Value, ValueKind, executor,
+    analyzer::{ResolvedExpression, ResolvedShapeExpression, ResolvedStatement, Symbol},
+};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct ShapeInstance {
-    id: ShapeId,
-    generics: Vec<ShapeInstance>,
+    pub(crate) id: ShapeId,
+    pub(crate) generics: Vec<ValueKind>,
 }
 
-pub fn evaluate_shape(runtime: &Runtime, shape:ResolvedShapeExpression) -> ShapeInstance {
-    todo!()
+pub const OBJECT_INSTANCE: ShapeInstance = ShapeInstance{id:0, generics:Vec::new()};
+
+pub fn evaluate_shape(runtime: &Runtime, shape:ResolvedShapeExpression) -> ValueKind {
+    shape.kind()
 }
 
 pub fn evaluate(runtime: &Runtime, expression:ResolvedExpression) -> Value {
@@ -26,7 +28,7 @@ pub fn evaluate(runtime: &Runtime, expression:ResolvedExpression) -> Value {
             }
             Value::Array(values)
         },
-        ResolvedExpression::Variable(Symbol::Object(k)) => Value::Single(PrimitiveValue::ObjectId(0, k.id)),
+        ResolvedExpression::Variable(Symbol::Object(k)) => Value::Single(PrimitiveValue::ObjectId(OBJECT_INSTANCE, k.id)),
 
         ResolvedExpression::UnaryOp { operator, operand } => {
             match (operator, evaluate(runtime, *operand)) {
@@ -146,13 +148,14 @@ pub fn execute(runtime: &mut Runtime, ast: Vec<ResolvedStatement>) {
 pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) {
     match statement {
         ResolvedStatement::Using { ast} => {
-            executor::execute(&mut runtime, ast);
+            executor::execute(runtime, ast);
         },
 
         ResolvedStatement::Print { expr } => {
             match evaluate(runtime, expr) {
                 Value::Single(PrimitiveValue::String(k)) => println!("{:?}", k),
-                other => panic!("Failed to print {:?}", expr),
+                Value::Single(PrimitiveValue::ObjectId(_, id)) => runtime.print_object(id),
+                other => panic!("Failed to print {:?}", other),
             }
         },
 
@@ -166,29 +169,29 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) {
 
         ResolvedStatement::Attach { object, shape} => {
             match (evaluate(runtime, object), evaluate_shape(runtime, shape)) {
-                (Value::Single(PrimitiveValue::ObjectId(_, object_id)), shape_inst) => runtime.attach_shape(object_id, shape_inst),
+                (Value::Single(PrimitiveValue::ObjectId(_, object_id)), ValueKind::Shape(shape_inst)) => runtime.attach_shape(object_id, shape_inst),
                 (object, shape) => panic!("Could not attach {:?} to {:?}", shape, object)
             }
         },
 
         ResolvedStatement::Detach { object, shape } => {
             match (evaluate(runtime, object), evaluate_shape(runtime, shape)) {
-                (Value::Single(PrimitiveValue::ObjectId(_, object_id)), shape_inst) => runtime.detach_shape(object_id, shape_inst),
+                (Value::Single(PrimitiveValue::ObjectId(_, object_id)), ValueKind::Shape(shape_inst)) => runtime.detach_shape(object_id, shape_inst),
                 (object, shape) => panic!("Could not detach {:?} from {:?}", shape, object)
             }
         },
 
         ResolvedStatement::AddMapping { object, mapping } => {
-            if let (Value::Single(PrimitiveValue::ObjectId(_, id)), Symbol::Azimuth(from), Symbol::Azimuth(to))
-                = (evaluate(runtime, object), mapping.from, mapping.to) {
-                runtime.remap_slot(id, to.id, from.id);
+            match (evaluate(runtime, object), mapping.from, mapping.to) {
+                (Value::Single(PrimitiveValue::ObjectId(_, id)), Symbol::Azimuth(from), Symbol::Azimuth(to))
+                    => runtime.remap_slot(id, to.id, from.id),
+                (object, from, to) => panic!("Invalid mapping: {:?}, {:?} -> {:?}", object, from, to),
             }
-            else { panic!("Invalid mapping: {:?}, {:?} -> {:?}", object, mapping.from, mapping.to); }
         },
 
         ResolvedStatement::AttachWithRemap { object, shape, mappings } => {
             match (evaluate(runtime, object), evaluate_shape(runtime, shape)) {
-                (Value::Single(PrimitiveValue::ObjectId(_, object_id)), shape_inst) => {
+                (Value::Single(PrimitiveValue::ObjectId(_, object_id)), ValueKind::Shape(shape_inst)) => {
                     
                     let mut remap = Vec::new();
                     for mapping in mappings {
@@ -208,11 +211,15 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) {
         },
         
         ResolvedStatement::Assign { target, value } => {
+            let new_val = evaluate(runtime, *value);
+
             match evaluate_mut(runtime, *target) {
-                Some(target) => target = &mut evaluate(runtime, *value),
-                other => panic!("Could not assign {:?} to {:?}", value, target),
+                Some(target_val) => {
+                    *target_val = new_val;
+                }
+                other => panic!("Could not assign {:?} to {:?}", new_val, other),
             }
-        },
+        }
 
         other => panic!("Invalid statement: {:?}", other)
     }

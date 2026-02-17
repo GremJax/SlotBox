@@ -36,6 +36,7 @@ pub enum Expression {
 pub enum ShapeExpression {
     Simple(Identifier),
     Parameter(Identifier), // T
+    Primitive(ValueKind),
     Applied {
         base: Box<ShapeExpression>,
         args: Vec<ShapeExpression>,
@@ -84,10 +85,7 @@ pub enum Statement {
         local: Expression,
         statement: Box<Statement>,
     },
-    Assign {
-        target: Box<Expression>,
-        value: Box<Expression>,
-    }
+    Assign { target: Expression, value: Expression, },
 
 }
 
@@ -141,10 +139,7 @@ fn build_expression(tokens: &mut std::iter::Peekable<std::vec::IntoIter<Token>>)
     }
 }
 
-fn parse_shape_expression(
-    tokens: &mut std::iter::Peekable<std::vec::IntoIter<Token>>,
-    generic_params: &[Identifier],
-) -> ShapeExpression {
+fn parse_shape_expression(tokens: &mut std::iter::Peekable<std::vec::IntoIter<Token>>, generic_params: &[Identifier],) -> ShapeExpression {
     let base = match tokens.next() {
         Some(Token::Identifier(id)) => {
             if generic_params.contains(&id) {
@@ -153,6 +148,7 @@ fn parse_shape_expression(
                 ShapeExpression::Simple(id)
             }
         }
+        Some(Token::Type(kind)) => ShapeExpression::Primitive(kind),
         other => panic!("Expected shape identifier, got {:?}", other),
     };
 
@@ -211,19 +207,31 @@ pub fn parse(input: Vec<Token>) -> Vec<Statement> {
 
                 let mut slot_ids = Vec::new();
                 let mut mappings = Vec::new();
+
                 let mut generics = Vec::new();
+                let mut generic_names = Vec::new();
 
                 // Establish generics
                 if let Some(Token::Operator(Operator::LT)) = tokens.peek() {
                     tokens.next(); // consume '<'
 
-                    while let Some(token) = tokens.next() {
+                    while let Some(token) = tokens.peek() {
                         match token {
-                            Token::Identifier(generic_name) => {
-                                generics.push(generic_name as Identifier);
+                            Token::Identifier(_) => {
+                                let shape_expr = parse_shape_expression(&mut tokens, &mut generic_names);
+
+                                match &shape_expr{
+                                    ShapeExpression::Parameter(x) => generic_names.push(x.clone()),
+                                    _ => {}
+                                }
+
+                                generics.push(shape_expr)
                             }
-                            Token::Comma => {}
-                            Token::Operator(Operator::GT) => break,
+                            Token::Comma => { tokens.next(); }
+                            Token::Operator(Operator::GT) => { 
+                                tokens.next();
+                                break
+                            }
                             _ => panic!("Unexpected token in generic declaration: {:?}", token),
                         }
                     }
@@ -239,7 +247,7 @@ pub fn parse(input: Vec<Token>) -> Vec<Statement> {
                                 tokens.next();
 
                                 // Type
-                                let value_type = parse_shape_expression(&mut tokens, generic_params);
+                                let value_type = parse_shape_expression(&mut tokens, &mut generic_names);
 
                                 // Static
                                 let is_static = match tokens.peek() {
@@ -252,7 +260,7 @@ pub fn parse(input: Vec<Token>) -> Vec<Statement> {
 
                                 // Default
                                 let set_value = match tokens.peek() {
-                                    Some(Token::Operator(Operator::Equal)) => {
+                                    Some(Token::Operator(Operator::Assign)) => {
                                         tokens.next();
                                         Some(build_expression(&mut tokens))
                                     }
@@ -307,7 +315,8 @@ pub fn parse(input: Vec<Token>) -> Vec<Statement> {
                     Some(Token::Operator(Operator::Attach)) => {
                         tokens.next(); // consume operator
                         
-                        let shape = parse_shape_expression(&mut tokens, generics);
+                        let mut generics = Vec::new();
+                        let shape = parse_shape_expression(&mut tokens, &mut generics);
 
                         // Check for mappings
                         if let Some(Token::LeftBrace) = tokens.peek() {
@@ -348,9 +357,18 @@ pub fn parse(input: Vec<Token>) -> Vec<Statement> {
                     Some(Token::Operator(Operator::Detach)) => {
                         tokens.next(); // consume operator
                         
-                        let shape = parse_shape_expression(&mut tokens, generics);
+                        let shape = parse_shape_expression(&mut tokens, &Vec::new());
 
                         statements.push(Statement::Detach { object, shape });
+                    }
+
+                    // Assign
+                    Some(Token::Operator(Operator::Assign)) => {
+                        tokens.next(); // consume operator
+
+                        let value = build_expression(&mut tokens);
+
+                        statements.push(Statement::Assign{ target: object, value });
                     }
 
                     other => { panic!("Unexpected operator after object name: {:?}", other); }

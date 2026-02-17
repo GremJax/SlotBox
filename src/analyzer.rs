@@ -1,6 +1,6 @@
 use std::{collections::HashMap, fs};
 
-use crate::{AzimuthId, ObjectId, PrimitiveValue, ShapeId, Value, ValueKind, analyzer, executor, parser::{self, Mapping}, tokenizer}; 
+use crate::{AzimuthId, ObjectId, PrimitiveValue, ShapeId, Value, ValueKind, analyzer, executor::{self, ShapeInstance}, parser::{self, Mapping}, tokenizer}; 
 use parser::{Azimuth, Expression, Statement, ShapeExpression};
 use tokenizer::{Operator};
 
@@ -11,8 +11,8 @@ type Identifier = String;
 pub struct ShapeInfo {
     pub id: ShapeId,
     pub name: Identifier,
-    pub static_id: ObjectId,
-    pub azimuths: Vec<AzimuthId>,
+    pub static_id: Box<Option<Symbol>>,
+    pub azimuths: Vec<Symbol>,
     pub generics: Vec<ResolvedShapeExpression>,
 }
 
@@ -21,7 +21,8 @@ pub struct AzimuthInfo {
     pub id: AzimuthId,
     pub name: Identifier,
     pub is_static: bool,
-    pub value_type: ResolvedShapeExpression,
+    pub shape_id: ShapeId,
+    pub value_type: ValueKind,
 }
 
 #[derive(Debug, Clone)]
@@ -41,9 +42,9 @@ pub enum Symbol {
 impl Symbol {
     fn kind(&self) -> ValueKind {
         match self {
-            Symbol::Shape(info) => ValueKind::None,
-            Symbol::Object(info) => ValueKind::ObjectId(0),
-            Symbol::Azimuth(info) => info.value_type.kind(),
+            Symbol::Shape(info) => ValueKind::Shape(ShapeInstance{id: info.id, generics: Vec::new()}),
+            Symbol::Object(info) => ValueKind::Shape(executor::OBJECT_INSTANCE),
+            Symbol::Azimuth(info) => info.value_type.clone(),
             Symbol::Local(info) => ValueKind::None,
         }
     }
@@ -94,20 +95,26 @@ pub enum ResolvedStatement {
 
 #[derive(Debug, Clone)]
 pub enum ResolvedShapeExpression {
-    Simple(Identifier),
+    Simple(Symbol),
     Parameter(Identifier), // T
+    Primitive(ValueKind),
     Applied {
-        base: Box<ResolvedShapeExpression>,
+        base: Symbol,
         args: Vec<ResolvedShapeExpression>,
     }
 }
 
 impl ResolvedShapeExpression {
-    fn kind(&self) -> ValueKind {
+    pub fn kind(&self) -> ValueKind {
         match self {
-            ResolvedShapeExpression::Simple(_) => ValueKind::None,
+            ResolvedShapeExpression::Simple(symbol) => symbol.kind(),
             ResolvedShapeExpression::Parameter(_) => ValueKind::Generic(0),
-            ResolvedShapeExpression::Applied{base: _, args: _} => ValueKind::None,
+            ResolvedShapeExpression::Applied{base: Symbol::Shape(info), args} => ValueKind::Shape(ShapeInstance{
+                id: info.id,
+                generics: args.iter().map(|expr| expr.kind()).collect()
+            }),
+            ResolvedShapeExpression::Primitive(kind) => kind.clone(),
+            other => panic!("Unexpected shape type: {:?}", other),
         }
     }
 }
@@ -133,7 +140,7 @@ pub enum ResolvedExpression {
 }
 
 impl ResolvedExpression {
-    fn kind(&self) -> ValueKind {
+    pub fn kind(&self) -> ValueKind {
         match self {
             ResolvedExpression::Literal(Value::Single(value)) => value.kind(),
             ResolvedExpression::Literal(Value::Array(values)) => todo!(),
@@ -222,7 +229,6 @@ impl Analyzer {
 
         // Azimuths
         let mut az_symbols = Vec::new();
-        let mut az_ids = Vec::new();
         let mut az_id = self.next_azimuth_id.clone();
         let mut has_static = false;
 
@@ -230,11 +236,11 @@ impl Analyzer {
             let symbol = Symbol::Azimuth(AzimuthInfo {
                 id: az_id,
                 name: azimuth.name,
+                shape_id: id,
                 is_static: azimuth.is_static,
-                value_type: self.resolve_shape_expression(azimuth.value_type, scope),
+                value_type: self.resolve_shape_expression(azimuth.value_type, scope).kind(),
             });
             if azimuth.is_static { has_static = true; }
-            az_ids.push(az_id);
             az_symbols.push(symbol);
             az_id += 1;
         }
@@ -247,29 +253,27 @@ impl Analyzer {
         }
 
         // Static singleton
-        let static_id = if has_static {
-            if let Symbol::Object(info) = self.declare_object(scope, format!("{}::Static", name)) {
-                info.id
-            } else { panic!("How") }
-        } else { 0 };
+        let static_info = if has_static {
+            Some(self.declare_object(scope, format!("{}::Static", name)).clone())
+        } else { None };
+        
+        let scope = self.get_scope_mut(scope);
 
+        for az_symbol in &az_symbols {
+            match &az_symbol {
+                Symbol::Azimuth(info) => { scope.symbols.insert(info.name.clone(), az_symbol.clone()); }
+                _ => { panic!("How tf"); }
+            }
+        }
+        
         // Shape
         let symbol = Symbol::Shape(ShapeInfo{
             id: id,
             name: name.clone(),
-            static_id: static_id,
-            azimuths: az_ids,
+            static_id: Box::new(static_info),
+            azimuths: az_symbols,
             generics: resolved_generics,
         });
-        
-        let scope = self.get_scope_mut(scope);
-
-        for az_symbol in az_symbols {
-            match &az_symbol {
-                Symbol::Azimuth(info) => { scope.symbols.insert(info.name.clone(), az_symbol); }
-                _ => { panic!("How tf"); }
-            }
-        }
 
         scope.symbols.insert(name.clone(), symbol);
         scope.symbols.get(&name).unwrap()
@@ -297,8 +301,18 @@ impl Analyzer {
                 ResolvedExpression::Array(values)
             },
             
-            Expression::Variable(k) => 
-                ResolvedExpression::Variable(self.get_object( scope, k.clone()).expect(format!("Object not found: {:?}", k).as_str()).clone()),
+            Expression::Variable(k) => {
+                match self.get_symbol(scope, k.clone()) {
+                    Some(Symbol::Object(info)) => ResolvedExpression::Variable(Symbol::Object(info.clone())),
+                    Some(Symbol::Shape(info)) => {
+                        match *info.static_id.clone() {
+                            Some(symbol) => ResolvedExpression::Variable(symbol),
+                            _ => panic!("Could not find static {} in scope", k),
+                        }
+                    }
+                    _ => panic!("Could not find {} in scope", k),
+                }
+            }
 
             Expression::UnaryOp { operator, operand } => {
                 match self.resolve_expression(*operand, scope) {
@@ -372,7 +386,16 @@ impl Analyzer {
     }
 
     pub fn resolve_shape_expression(&mut self, expression:ShapeExpression, scope:ScopeId) -> ResolvedShapeExpression {
-        todo!()
+        match expression{
+            ShapeExpression::Simple(k) => ResolvedShapeExpression::Simple(
+                self.get_shape(scope, k.clone()).expect(format!("Shape not found in scope: {:?}", k).as_str()).clone()
+            ),
+
+            ShapeExpression::Parameter(k) => ResolvedShapeExpression::Parameter(k),
+            ShapeExpression::Primitive(kind) => ResolvedShapeExpression::Primitive(kind),
+
+            ShapeExpression::Applied { base, args } => todo!(),
+        }
     }
 
     pub fn resolve_mapping(&mut self, mapping:Mapping, scope:ScopeId) -> ResolvedMapping {
@@ -388,7 +411,7 @@ impl Analyzer {
                 let source = fs::read_to_string(format!("/workspaces/SlotBox/src/{}.az", package));
                 let tokens = tokenizer::tokenize(&source.unwrap_or_else(|_| panic!("Failed to read source file: {:?}.az", package)));
                 let ast = parser::parse(tokens);
-                ResolvedStatement::Using{ ast: analyzer::analyze(ast) }
+                ResolvedStatement::Using{ ast: self.analyze(ast) }
             }
             Statement::DeclareShape { name, slot_ids, mappings, generics } => {
                 let my_scope = self.get_scope_mut(scope);
@@ -450,20 +473,25 @@ impl Analyzer {
 
             Statement::Assign {target, value } => 
                 ResolvedStatement::Assign{ 
-                    target: Box::new(self.resolve_expression(*target, scope)), 
-                    value: Box::new(self.resolve_expression(*value, scope)),
+                    target: Box::new(self.resolve_expression(target, scope)), 
+                    value: Box::new(self.resolve_expression(value, scope)),
                 },
         }
+    }
+
+    fn analyze(&mut self, statements: Vec<Statement>) -> Vec<ResolvedStatement> {
+        let mut resolved = Vec::new();
+
+        for statement in statements {
+            resolved.push(self.resolve_statement(statement, 0));
+        }
+    
+        println!("{:?}", resolved);
+        resolved
     }
 }
 
 pub fn analyze(statements: Vec<Statement>) -> Vec<ResolvedStatement> {
     let mut analyzer = Analyzer::new();
-    let mut resolved = Vec::new();
-
-    for statement in statements {
-        resolved.push(analyzer.resolve_statement(statement, 0));
-    }
-    
-    resolved
+    analyzer.analyze(statements)
 }

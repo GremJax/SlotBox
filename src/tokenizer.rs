@@ -176,34 +176,43 @@ pub fn tokenize(input: &str) -> Vec<Token> {
             },
             _ => {
                 let mut operator = String::new();
+                let mut comment_line = false;
+
                 while let Some(&ch) = chars.peek() {
+
                     if !WHITESPACE.contains(&ch) && !ch.is_alphanumeric() && ch != '_' {
-                        operator.push(ch);
                         chars.next();
+
+                        // Single line comment
+                        if ch == '/' && chars.peek() == Some(&'/') {
+                            while let Some(ch) = chars.next() {
+                                if ch == '\n' {
+                                    break;
+                                }
+                            }
+                            comment_line = true;
+                            break;
+                        }
+
+                        // Multi line comment
+                        if ch == '/' && chars.peek() == Some(&'*') {
+                            while let Some(ch) = chars.next() {
+                                if ch == '*' && chars.peek() == Some(&'/') {
+                                    chars.next();
+                                    break;
+                                }
+                            }
+                            break;
+                        }
+
+                        operator.push(ch);
                     } else {
                         break;
                     }
                 }
-                
-                if operator == "//" {
-                    // Skip single-line comment
-                    while let Some(ch) = chars.next() {
-                        if ch == '\n' {
-                            break;
-                        }
-                    }
-                }
-                
-                if operator == "/*" {
-                    // Skip multi-line comment
-                    while let Some(ch) = chars.next() {
-                        if ch == '*' && chars.peek() == Some(&'/') {
-                            chars.next();
-                            break;
-                        }
-                    }
-                }
 
+                if comment_line { continue; }
+                
                 tokens.push( Token::Operator(match operator.as_str() {
                     "+" => Operator::Add,
                     "-" => Operator::Sub,

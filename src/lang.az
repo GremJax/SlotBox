@@ -18,11 +18,11 @@ shape Counts {
     GlobalCount int32 static = 5
 }
 
-shape TypedThing<T> {
-    Thing T
-}
+//shape TypedThing<T> {
+//    Thing T
+//}
 
-print " "
+print "__"
 
 let firstThing
 firstThing := Point
@@ -51,11 +51,11 @@ firstThing.Width = 20
 firstThing.Height = 2
 print firstThing
 
-firstThing := TypedThing<int32>
-print firstThing
+//firstThing := TypedThing<int32>
+//print firstThing
 
-firstThing.Thing = 5
-print firstThing
+//firstThing.Thing = 5
+//print firstThing
 
 let secondThing
 secondThing := Box
@@ -72,6 +72,6 @@ print secondThing
 secondThing.Height = secondThing.InteriorShape.Height
 print secondThing
 
-Counts.GlobalCount = 5
+//Counts.GlobalCount = 5
 secondThing.Height = Counts.GlobalCount
 print secondThing

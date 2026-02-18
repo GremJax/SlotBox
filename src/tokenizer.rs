@@ -33,6 +33,7 @@ impl Operator {
                 => ValueKind::Int32,
                 
             Operator::Equal | Operator::NEqual | Operator::And | Operator::Or | Operator::Not |
+            Operator::LT | Operator::GT | Operator::LTE | Operator::GTE | 
             Operator::IsShape | Operator::NIsShape 
                 => ValueKind::Bool,
                 

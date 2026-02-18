@@ -79,7 +79,7 @@ pub enum ResolvedStatement {
     If {
         condition: ResolvedExpression,
         true_statement: Box<ResolvedStatement>,
-        else_statement: Box<ResolvedStatement>,
+        else_statement: Box<Option<ResolvedStatement>>,
     },
     While {
         condition: ResolvedExpression,
@@ -487,17 +487,20 @@ impl Analyzer {
             Statement::If { condition, true_statement, else_statement } => {
                 let resolved_condition = self.resolve_expression(condition, scope);
                 if resolved_condition.kind() != ValueKind::Bool {
-                    panic!("Expected bool condition, got {:?}", resolved_condition);
+                    panic!("Expected bool condition, got {:?} from {:?}", resolved_condition.kind(), resolved_condition);
                 }
 
                 let resolved_true = self.resolve_statement(*true_statement, scope);
-                let resolved_else = self.resolve_statement(*else_statement, scope);
+                let resolved_else = if let Some(statement) = *else_statement {
+                    Some(self.resolve_statement(statement, scope))
+                } else { None };
+
                 ResolvedStatement::If{condition: resolved_condition, true_statement: Box::new(resolved_true), else_statement: Box::new(resolved_else)}
             }
             Statement::While { condition, statement } => {
                 let resolved_condition = self.resolve_expression(condition, scope);
                 if resolved_condition.kind() != ValueKind::Bool {
-                    panic!("Expected bool condition, got {:?}", resolved_condition);
+                    panic!("Expected bool condition, got {:?} from {:?}", resolved_condition.kind(), resolved_condition);
                 }
 
                 let resolved_statement = self.resolve_statement(*statement, scope);
@@ -527,7 +530,7 @@ impl Analyzer {
                 
             Statement::Block(statements) => {
                 let new_scope = self.create_scope(scope);
-                
+
                 let mut resolved_statements = Vec::new();
                 for statement in statements {
                     resolved_statements.push(self.resolve_statement(statement, new_scope));

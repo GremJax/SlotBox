@@ -74,7 +74,7 @@ pub enum Statement {
     If {
         condition: Expression,
         true_statement: Box<Statement>,
-        else_statement: Box<Statement>,
+        else_statement: Box<Option<Statement>>,
     },
     While {
         condition: Expression,
@@ -89,7 +89,9 @@ pub enum Statement {
     Block(Vec<Statement>),
 }
 
-fn parse_expression(tokens: &mut std::iter::Peekable<std::vec::IntoIter<Token>>) -> Expression {
+type PeekableTokens = std::iter::Peekable<std::vec::IntoIter<Token>>;
+
+fn parse_expression(tokens: &mut PeekableTokens) -> Expression {
     if let Some(token) = tokens.next() {
         let mut expr = match token {
             // Unary preceding operator
@@ -163,7 +165,7 @@ fn parse_expression(tokens: &mut std::iter::Peekable<std::vec::IntoIter<Token>>)
     }
 }
 
-fn parse_shape_expression(tokens: &mut std::iter::Peekable<std::vec::IntoIter<Token>>) -> ShapeExpression {
+fn parse_shape_expression(tokens: &mut PeekableTokens) -> ShapeExpression {
     let base = match tokens.next() {
         Some(Token::Identifier(identifier)) => ShapeExpression::Shape(identifier),
         Some(Token::Type(kind)) => ShapeExpression::Primitive(kind),
@@ -199,13 +201,8 @@ fn parse_shape_expression(tokens: &mut std::iter::Peekable<std::vec::IntoIter<To
     }
 }
 
-pub fn parse(input: Vec<Token>) -> Vec<Statement> {
-    let mut statements = Vec::new();
-    let mut tokens = input.into_iter().peekable();
-
-    let mut stack = Vec::new();
-
-    while let Some(token) = tokens.peek() {
+fn parse_statement(tokens: &mut PeekableTokens) -> Statement {
+    if let Some(token) = tokens.peek() {
         match token {
 
             // Package import
@@ -216,7 +213,7 @@ pub fn parse(input: Vec<Token>) -> Vec<Statement> {
                     other => panic!("Expected package name after 'using', got {:?}", other),
                 };
 
-                statements.push(Statement::Using { package: package });
+                Statement::Using { package: package }
             },
 
             // Shape declaration
@@ -243,7 +240,7 @@ pub fn parse(input: Vec<Token>) -> Vec<Statement> {
                     while let Some(token) = tokens.peek() {
                         match token {
                             Token::Identifier(_) => {
-                                let shape_expr = parse_shape_expression(&mut tokens);
+                                let shape_expr = parse_shape_expression(tokens);
                                 generics.push(shape_expr)
                             }
                             Token::Comma => { tokens.next(); }
@@ -266,7 +263,7 @@ pub fn parse(input: Vec<Token>) -> Vec<Statement> {
                                 tokens.next();
 
                                 // Type
-                                let value_type = parse_shape_expression(&mut tokens);
+                                let value_type = parse_shape_expression(tokens);
 
                                 // Static
                                 let is_static = match tokens.peek() {
@@ -281,7 +278,7 @@ pub fn parse(input: Vec<Token>) -> Vec<Statement> {
                                 let set_value = match tokens.peek() {
                                     Some(Token::Operator(Operator::Assign)) => {
                                         tokens.next();
-                                        Some(parse_expression(&mut tokens))
+                                        Some(parse_expression(tokens))
                                     }
                                     _ => None
                                 };
@@ -301,7 +298,7 @@ pub fn parse(input: Vec<Token>) -> Vec<Statement> {
                     panic!("Expected '{{' after shape declaration");
                 }
 
-                statements.push(Statement::DeclareShape { name: shape_identifier, slot_ids, mappings, generics });
+                Statement::DeclareShape { name: shape_identifier, slot_ids, mappings, generics }
             },
 
             // Object declaration
@@ -315,26 +312,26 @@ pub fn parse(input: Vec<Token>) -> Vec<Statement> {
                     ),
                 };
 
-                statements.push(Statement::DeclareObject { name: object_identifier });
+                Statement::DeclareObject { name: object_identifier }
             },
 
             // print
             Token::Keyword(Keyword::Print) => {
                 tokens.next(); // consume 'print' keyword
-                statements.push(Statement::Print{ expr: parse_expression(&mut tokens)});
+                Statement::Print{ expr: parse_expression(tokens)}
             },
 
             // Object Identifier
             Token::Identifier(_) => {
                 // Build member call
-                let object = parse_expression(&mut tokens);
+                let object = parse_expression(tokens);
                 
                 match tokens.peek() {
                     // Attach
                     Some(Token::Operator(Operator::Attach)) => {
                         tokens.next(); // consume operator
                         
-                        let shape = parse_shape_expression(&mut tokens);
+                        let shape = parse_shape_expression(tokens);
 
                         // Check for mappings
                         if let Some(Token::LeftBrace) = tokens.peek() {
@@ -365,9 +362,9 @@ pub fn parse(input: Vec<Token>) -> Vec<Statement> {
                                 }
                             }
 
-                            statements.push(Statement::AttachWithRemap { object, shape, mappings });
+                            Statement::AttachWithRemap { object, shape, mappings }
                         } else {
-                            statements.push(Statement::Attach { object, shape });
+                            Statement::Attach { object, shape }
                         }
                     }
 
@@ -375,41 +372,41 @@ pub fn parse(input: Vec<Token>) -> Vec<Statement> {
                     Some(Token::Operator(Operator::Detach)) => {
                         tokens.next(); // consume operator
                         
-                        let shape = parse_shape_expression(&mut tokens);
+                        let shape = parse_shape_expression(tokens);
 
-                        statements.push(Statement::Detach { object, shape });
+                        Statement::Detach { object, shape }
                     }
 
                     // Assign
                     Some(Token::Operator(Operator::Assign)) => {
                         tokens.next(); // consume operator
-                        let value = parse_expression(&mut tokens);
-                        statements.push(Statement::Assign{ target: object, value });
+                        let value = parse_expression(tokens);
+                        Statement::Assign{ target: object, value }
                     }
                     Some(Token::Operator(Operator::AddAssign)) => {
                         tokens.next(); // consume operator
-                        let value = parse_expression(&mut tokens);
-                        statements.push(Statement::AssignAugmented{ target: object, value, operator:Operator::Add });
+                        let value = parse_expression(tokens);
+                        Statement::AssignAugmented{ target: object, value, operator:Operator::Add }
                     }
                     Some(Token::Operator(Operator::SubAssign)) => {
                         tokens.next(); // consume operator
-                        let value = parse_expression(&mut tokens);
-                        statements.push(Statement::AssignAugmented{ target: object, value, operator:Operator::Sub });
+                        let value = parse_expression(tokens);
+                        Statement::AssignAugmented{ target: object, value, operator:Operator::Sub }
                     }
                     Some(Token::Operator(Operator::MulAssign)) => {
                         tokens.next(); // consume operator
-                        let value = parse_expression(&mut tokens);
-                        statements.push(Statement::AssignAugmented{ target: object, value, operator:Operator::Mul });
+                        let value = parse_expression(tokens);
+                        Statement::AssignAugmented{ target: object, value, operator:Operator::Mul }
                     }
                     Some(Token::Operator(Operator::DivAssign)) => {
                         tokens.next(); // consume operator
-                        let value = parse_expression(&mut tokens);
-                        statements.push(Statement::AssignAugmented{ target: object, value, operator:Operator::Div });
+                        let value = parse_expression(tokens);
+                        Statement::AssignAugmented{ target: object, value, operator:Operator::Div }
                     }
                     Some(Token::Operator(Operator::ModAssign)) => {
                         tokens.next(); // consume operator
-                        let value = parse_expression(&mut tokens);
-                        statements.push(Statement::AssignAugmented{ target: object, value, operator:Operator::Mod });
+                        let value = parse_expression(tokens);
+                        Statement::AssignAugmented{ target: object, value, operator:Operator::Mod }
                     }
 
                     other => { panic!("Unexpected operator after object name: {:?}", other); }
@@ -421,49 +418,64 @@ pub fn parse(input: Vec<Token>) -> Vec<Statement> {
                 tokens.next(); // Consume brace
 
                 // Add current statements to stack
-                stack.push(statements);
-                statements = Vec::new();
-            }
-            Token::RightBrace => {
-                tokens.next(); // Consume brace
+                let mut statements = Vec::new();
+                while let Some(token) = tokens.peek() {
+                    match token {
+                        Token::RightBrace => {
+                            tokens.next(); // Consume brace
+                            break
+                        }
+                        Token::EOF => panic!("End of file reached before block closed"),
+                        _ => statements.push(parse_statement(tokens))
+                    }
+                }
 
-                // Close block and apend to outer statements
-                let mut upper = stack.pop().expect("Premature block close");
-                upper.push(Statement::Block(statements));
-                statements = upper;
-            }
+                Statement::Block(statements)
+            },
 
-            /*
+            // If
             Token::Keyword(Keyword::If) => {
                 tokens.next(); // Consume if
 
-                let condition = parse_expression(&mut tokens);
-                let true_statement = parse_statement(&mut tokens);
+                let condition = parse_expression(tokens);
+                let true_statement = parse_statement(tokens);
 
                 let else_statement = match tokens.peek(){
                     Some(Token::Keyword(Keyword::Else)) => {
                         tokens.next(); // Consume else
-                        Some(parse_statement(&mut tokens))
+                        Some(parse_statement(tokens))
                     }
                     _ => None
                 };
 
-                statements.push(Statement::If{ condition, true_statement, else_statement });
-            }
+                Statement::If{ condition, true_statement: Box::new(true_statement), else_statement: Box::new(else_statement) }
+            },
 
+            // While
             Token::Keyword(Keyword::While) => {
                 tokens.next(); // Consume while
 
-                let condition = parse_expression(&mut tokens);
-                let statement = parse_statement(&mut tokens);
+                let condition = parse_expression(tokens);
+                let statement = parse_statement(tokens);
 
-                statements.push(Statement::While{ condition, statement });
-            }
-            */
-
-            Token::EOF => break,
+                Statement::While{ condition, statement: Box::new(statement) }
+            },
 
             _ => panic!("Unexpected token: {:?}", token),
+        }
+    } else {
+        panic!("EOF")
+    }
+}
+
+pub fn parse(input: Vec<Token>) -> Vec<Statement> {
+    let mut statements = Vec::new();
+    let mut tokens = input.into_iter().peekable();
+
+    while let Some(token) = tokens.peek() {
+        match token {
+            Token::EOF => break,
+            _ => statements.push(parse_statement(&mut tokens))
         }
     }
     

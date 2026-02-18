@@ -153,8 +153,9 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) {
 
         ResolvedStatement::Print { expr } => {
             match evaluate(runtime, expr) {
-                Value::Single(PrimitiveValue::String(k)) => println!("{:?}", k),
+                Value::Single(PrimitiveValue::String(k)) => println!("{}", k),
                 Value::Single(PrimitiveValue::ObjectId(_, id)) => runtime.print_object(id),
+                Value::Single(k) => println!("{:?}", k),
                 other => panic!("Failed to print {:?}", other),
             }
         },
@@ -226,7 +227,11 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) {
 
             match cond {
                 Value::Single(PrimitiveValue::Bool(true)) => execute_statement(runtime, *true_statement),
-                Value::Single(PrimitiveValue::Bool(false)) => execute_statement(runtime, *else_statement),
+                Value::Single(PrimitiveValue::Bool(false)) => {
+                    if let Some(statement) = *else_statement {
+                        execute_statement(runtime, statement)
+                    }
+                }
                 other => panic!("If condition was not true or false: {:?}", other),
             }
         }

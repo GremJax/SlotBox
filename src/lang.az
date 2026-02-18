@@ -91,6 +91,18 @@ print Counts
     secondThing.Height = ((((5 / 2 PENIS PENIS PENIS PENIS
     print secondThing
     
-    secondThing.Height = 15 + (firstThing.Width / 2PENIS
+    secondThing.Height = 15 + (firstThing.Width / 2 PENIS
     print secondThing
 }
+
+if secondThing.Height == 5
+    print "TRUE"
+else print "FALSE"
+
+secondThing.Height = 0
+while secondThing.Height <= 5 {
+    secondThing.Height += 1
+    print secondThing.Height
+}
+
+print 6 ..< 8

@@ -1,7 +1,7 @@
 use crate::ValueKind;
 use crate::Value;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum Operator {
     Add, Sub, Mul, Div, Mod,
     AddAssign, SubAssign, MulAssign, DivAssign, ModAssign,
@@ -14,6 +14,15 @@ pub enum Operator {
     Assign, Attach, Detach, Arrow,
     IsShape, NIsShape
 }
+
+pub const UNARY_OPERATORS: &[Operator] = &[ Operator::BWNot, Operator::Not, Operator::Dec, Operator::Inc ];
+pub const BINARY_OPERATORS: &[Operator] = &[
+    Operator::Add, Operator::Sub, Operator::Mul, Operator::Div, Operator::Mod,
+    Operator::Equal, Operator::NEqual, Operator::GT, Operator::LT, Operator::GTE, Operator::LTE,
+    Operator::BWAnd, Operator::BWOr, Operator::BWXor, Operator::BWShiftL, Operator::BWShiftR,
+    Operator::And, Operator::Or, Operator::IsShape, Operator::NIsShape,
+    Operator::Range, Operator::RangeLT,
+];
 
 impl Operator {
     pub fn kind(&self) -> ValueKind {

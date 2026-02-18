@@ -88,10 +88,8 @@ pub enum ResolvedStatement {
     For {
 
     },
-    Assign {
-        target: Box<ResolvedExpression>,
-        value: Box<ResolvedExpression>,
-    }
+    Assign { target: Box<ResolvedExpression>, value: Box<ResolvedExpression> },
+    Block(Vec<ResolvedStatement>),
 }
 
 #[derive(Debug, Clone)]
@@ -153,6 +151,20 @@ impl ResolvedExpression {
             ResolvedExpression::MemberAccess {target:_, member } => member.kind(),
             _ => todo!()
         }
+    }
+}
+
+pub fn type_binary_operands(operator: Operator) -> ValueKind {
+    match operator {
+        Operator::Mul | Operator::Div | Operator::Sub | Operator::Mod |
+        Operator::BWAnd | Operator::BWOr | Operator::BWXor | Operator::BWNot | Operator::BWShiftL | Operator::BWShiftR |
+        Operator::Inc | Operator::Dec | Operator::Range | Operator::RangeLT
+            => ValueKind::Int32,
+            
+        Operator::And | Operator::Or | Operator::Not
+            => ValueKind::Bool,
+            
+        _ => ValueKind::None
     }
 }
 
@@ -398,14 +410,21 @@ impl Analyzer {
 
     pub fn resolve_shape_expression(&mut self, expression:ShapeExpression, scope:ScopeId) -> ResolvedShapeExpression {
         match expression{
-            ShapeExpression::Simple(k) => ResolvedShapeExpression::Simple(
+            ShapeExpression::Shape(k) => ResolvedShapeExpression::Simple(
                 self.get_shape(scope, k.clone()).expect(format!("Shape not found in scope: {:?}", k).as_str()).clone()
             ),
-
-            ShapeExpression::Parameter(k) => ResolvedShapeExpression::Parameter(k),
             ShapeExpression::Primitive(kind) => ResolvedShapeExpression::Primitive(kind),
 
-            ShapeExpression::Applied { base, args } => todo!(),
+            ShapeExpression::Applied { base, args } => {
+                let base = self.get_shape(scope, base.clone())
+                    .expect(format!("Shape not found in scope: {:?}", base).as_str()).clone();
+
+                let mut resolved = Vec::new();
+                for arg in args{
+                    resolved.push(self.resolve_shape_expression(arg, scope));
+                }
+                ResolvedShapeExpression::Applied{ base, args: resolved}
+            }
         }
     }
 
@@ -467,16 +486,21 @@ impl Analyzer {
             Statement::Print { expr } => ResolvedStatement::Print{expr: self.resolve_expression(expr, scope)},
             Statement::If { condition, true_statement, else_statement } => {
                 let resolved_condition = self.resolve_expression(condition, scope);
-                let true_scope: u32 = self.create_scope(scope);
-                let resolved_true = self.resolve_statement(*true_statement, true_scope);
-                let else_scope = self.create_scope(scope);
-                let resolved_else = self.resolve_statement(*else_statement, else_scope);
+                if resolved_condition.kind() != ValueKind::Bool {
+                    panic!("Expected bool condition, got {:?}", resolved_condition);
+                }
+
+                let resolved_true = self.resolve_statement(*true_statement, scope);
+                let resolved_else = self.resolve_statement(*else_statement, scope);
                 ResolvedStatement::If{condition: resolved_condition, true_statement: Box::new(resolved_true), else_statement: Box::new(resolved_else)}
             }
             Statement::While { condition, statement } => {
                 let resolved_condition = self.resolve_expression(condition, scope);
-                let new_scope = self.create_scope(scope);
-                let resolved_statement = self.resolve_statement(*statement, new_scope);
+                if resolved_condition.kind() != ValueKind::Bool {
+                    panic!("Expected bool condition, got {:?}", resolved_condition);
+                }
+
+                let resolved_statement = self.resolve_statement(*statement, scope);
                 ResolvedStatement::While{condition: resolved_condition, statement: Box::new(resolved_statement)}
             }
             
@@ -487,6 +511,29 @@ impl Analyzer {
                     target: Box::new(self.resolve_expression(target, scope)), 
                     value: Box::new(self.resolve_expression(value, scope)),
                 },
+            
+            Statement::AssignAugmented {target, value, operator } => {
+                let target = self.resolve_expression(target, scope);
+                let value = self.resolve_expression(value, scope);
+
+                // Ensure int types
+                if target.kind() != ValueKind::Int32 || value.kind() != ValueKind::Int32 {
+                    panic!("Invalid types for augmented assignment: {:?} {:?} {:?}", target, operator, value);
+                }
+
+                let expr = ResolvedExpression::BinaryOp { left: Box::new(target.clone()), operator, right: Box::new(value) };
+                ResolvedStatement::Assign { target: Box::new(target), value: Box::new(expr) }
+            }
+                
+            Statement::Block(statements) => {
+                let new_scope = self.create_scope(scope);
+                
+                let mut resolved_statements = Vec::new();
+                for statement in statements {
+                    resolved_statements.push(self.resolve_statement(statement, new_scope));
+                }
+                ResolvedStatement::Block(resolved_statements)
+            }
         }
     }
 

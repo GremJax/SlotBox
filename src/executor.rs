@@ -221,6 +221,35 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) {
             }
         }
 
+        ResolvedStatement::If { condition, true_statement, else_statement } => {
+            let cond = evaluate(runtime, condition);
+
+            match cond {
+                Value::Single(PrimitiveValue::Bool(true)) => execute_statement(runtime, *true_statement),
+                Value::Single(PrimitiveValue::Bool(false)) => execute_statement(runtime, *else_statement),
+                other => panic!("If condition was not true or false: {:?}", other),
+            }
+        }
+
+        ResolvedStatement::While { condition, statement } => {
+            let mut flag = true;
+            while flag {
+                flag = match evaluate(runtime, condition.clone()) {
+                    Value::Single(PrimitiveValue::Bool(true)) => true,
+                    Value::Single(PrimitiveValue::Bool(false)) => false,
+                    other => panic!("While condition was not true or false: {:?}", other),
+                };
+
+                if flag { execute_statement(runtime, *statement.clone());}
+            }
+        }
+
+        ResolvedStatement::Block(statements) => {
+            for statement in statements{
+                execute_statement(runtime, statement);
+            }
+        }
+
         other => panic!("Invalid statement: {:?}", other)
     }
 }

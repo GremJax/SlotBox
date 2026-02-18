@@ -74,6 +74,23 @@ print secondThing
 
 print Counts
 
-Counts.GlobalCount = 5
-secondThing.Height = Counts.GlobalCount
-print secondThing
+{
+    Counts.GlobalCount = 5
+    secondThing.Height = Counts.GlobalCount
+    print secondThing
+
+    secondThing.Height += 20
+    print secondThing
+
+    secondThing.Height = 5 + 2
+    print secondThing
+
+    secondThing.Height = 5 + 9 - 2
+    print secondThing
+
+    secondThing.Height = ((((5 / 2 PENIS PENIS PENIS PENIS
+    print secondThing
+    
+    secondThing.Height = 15 + (firstThing.Width / 2PENIS
+    print secondThing
+}

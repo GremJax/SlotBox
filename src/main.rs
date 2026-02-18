@@ -2,7 +2,7 @@ use std::{collections::{HashMap, HashSet}, fs};
 
 use crate::{
     analyzer::{AzimuthInfo, ObjectInfo, ShapeInfo, Symbol}, 
-    executor::ShapeInstance
+    executor::{RuntimeError, ShapeInstance}
 };
 
 pub mod parser;
@@ -275,7 +275,7 @@ impl Object {
         None
     }
 
-    fn set_value(&mut self, azimuth:AzimuthId, value:Value) {
+    fn set_value(&mut self, azimuth:AzimuthId, value:Value) -> Result<Value, RuntimeError> {
         for (azimuth_state, slot_state_id) in self.slot_mapping.clone() {
             if azimuth_state.azimuth == azimuth {
 
@@ -288,8 +288,8 @@ impl Object {
                 }
 
                 // Slot found
-                self.set_slot_state(slot_state_id, value);
-                return
+                self.set_slot_state(slot_state_id, value.clone());
+                return Ok(value);
             }
         }
         panic!("No such azimuth {:?} to assign to {:?}", azimuth, value);
@@ -368,7 +368,7 @@ impl Runtime {
 
                         match *info.default_value.clone() {
                             Some(expr) => {
-                                let evaluated: Value = executor::evaluate(self, expr);
+                                let evaluated: Value = executor::evaluate(self, expr).unwrap();
                                 self.set_slot_value(static_object_id, info.id, evaluated);
                             }
                             _ => {}
@@ -704,14 +704,24 @@ fn read_source(path: &str) -> Result<String, std::io::Error> {
 }
 
 fn main() {
+
+    let source = match fs::read_to_string("/workspaces/SlotBox/src/main.az") {
+        Ok(source) => source,
+        Err(_) => panic!("Could not find main.az"),
+    };
+
+    let tokens = tokenizer::tokenize(&source);
+
+    let ast = match parser::parse(tokens) {
+        Ok(ast) => ast,
+        Err(error) => panic!("Could not parse main.az:\n{}", error),
+    };
+
+    let resolved_ast = match analyzer::analyze(ast){
+        Ok(resolved_ast) => resolved_ast,
+        Err(error) => panic!("Could not compile main.az:\n{}", error),
+    };
+
     let mut runtime = Runtime::new();
-
-    let source = read_source("/workspaces/SlotBox/src/lang.az");
-    let tokens = tokenizer::tokenize(&source.unwrap_or_else(|_| panic!("Failed to read source file")));
-    let ast = parser::parse(tokens);
-    let resolved_ast = analyzer::analyze(ast);
-
     executor::execute(&mut runtime, resolved_ast);
-
-    println!("Program successfully executed!");
 }

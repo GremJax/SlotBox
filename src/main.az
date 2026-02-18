@@ -59,7 +59,7 @@ print firstThing
 
 let secondThing
 secondThing := Box
-secondThing.Height = 5
+secondThing.Height = 6
 print secondThing
 
 firstThing.Width = secondThing.Height
@@ -75,7 +75,7 @@ print secondThing
 print Counts
 
 {
-    Counts.GlobalCount = 5
+    Counts.GlobalCount = 47
     secondThing.Height = Counts.GlobalCount
     print secondThing
 
@@ -105,4 +105,8 @@ while secondThing.Height <= 5 {
     print secondThing.Height
 }
 
+if secondThing.Height < 2 throw "God has abandoned us"
+
 print 6 ..< 8
+
+print "Program successfully executed!"

@@ -1,9 +1,31 @@
-use crate::tokenizer::{self, Keyword, Operator, Token};
+use crate::tokenizer::{self, Keyword, Operator, Span, Token, TokenKind};
 use crate::PrimitiveValue;
 use crate::Value;
 use crate::ValueKind;
 
 type Identifier = String;
+
+#[derive(Debug, Clone)]
+pub enum ParseError {
+    Error { span: Span, message: String },
+    UnexpectedToken { span: Span, token: TokenKind },
+    IncorrectToken { span: Span, token: TokenKind, expected: String },
+}
+
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ParseError::Error { span, message } =>
+                write!(f, "{}: {}", span, message),
+
+            ParseError::UnexpectedToken { span, token } => 
+                write!(f, "{}: Unexpected token: {:?}", span, token),
+
+            ParseError::IncorrectToken { span, token, expected } => 
+                write!(f, "{}: Incorrect token: {:?}, expected {}", span, token, expected),
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 enum Presence {
@@ -13,19 +35,22 @@ enum Presence {
 
 #[derive(Debug, Clone)]
 pub enum Expression {
-    Literal(Value),
-    Array(Vec<Expression>),
-    Variable(Identifier),
+    Value(Span, Value),
+    Array(Span, Vec<Expression>),
+    Variable(Span, Identifier),
     UnaryOp {
+        span: Span,
         operator: Operator,
         operand: Box<Expression>,
     },
     BinaryOp {
+        span: Span,
         left: Box<Expression>,
         operator: Operator,
         right: Box<Expression>,
     },
     MemberAccess  {
+        span: Span,
         target: Box<Expression>,
         member: Identifier,
     }
@@ -58,427 +83,454 @@ pub struct Azimuth {
 
 #[derive(Debug, Clone)]
 pub enum Statement {
-    Using { package: String },
+    Using { span: Span, package: String },
     DeclareShape { 
+        span: Span, 
         name: Identifier, 
         slot_ids: Vec<Azimuth>,
         mappings: Vec<Mapping>,
         generics: Vec<ShapeExpression>,
     },
-    DeclareObject { name: Identifier }, 
-    Attach { object: Expression, shape: ShapeExpression },
-    Detach { object: Expression, shape: ShapeExpression },
-    AddMapping { object: Expression, mapping: Mapping },
-    AttachWithRemap { object: Expression, shape: ShapeExpression, mappings: Vec<Mapping> },
-    Print { expr: Expression },
+    DeclareObject { span: Span, name: Identifier }, 
+    Attach { span: Span, object: Expression, shape: ShapeExpression },
+    Detach { span: Span, object: Expression, shape: ShapeExpression },
+    AddMapping { span: Span, object: Expression, mapping: Mapping },
+    AttachWithRemap { span: Span, object: Expression, shape: ShapeExpression, mappings: Vec<Mapping> },
+    Print { span: Span, expr: Expression },
     If {
+        span: Span, 
         condition: Expression,
         true_statement: Box<Statement>,
         else_statement: Box<Option<Statement>>,
     },
     While {
+        span: Span, 
         condition: Expression,
         statement: Box<Statement>,
     },
     For {
+        span: Span, 
         local: Expression,
         statement: Box<Statement>,
     },
-    Assign { target: Expression, value: Expression, },
-    AssignAugmented { target: Expression, value: Expression, operator: Operator },
+    Assign { span: Span, target: Expression, value: Expression, },
+    AssignAugmented { span: Span, target: Expression, value: Expression, operator: Operator },
     Block(Vec<Statement>),
+
+    Break{ span: Span }, 
+    Continue{ span: Span }, 
+    Return{ span: Span, value: Expression },
+    Throw{ span: Span, message: Expression },
 }
 
 type PeekableTokens = std::iter::Peekable<std::vec::IntoIter<Token>>;
 
-fn parse_expression(tokens: &mut PeekableTokens) -> Expression {
-    if let Some(token) = tokens.next() {
-        let mut expr = match token {
-            // Unary preceding operator
-            Token::Operator(operator) => {
-                let expr = parse_expression(tokens);
-                Expression::UnaryOp{operator, operand: Box::new(expr)}
-            } 
+fn parse_expression(tokens: &mut PeekableTokens) -> Result<Expression, ParseError> {
+    let token = tokens.next().unwrap();
+    let span = token.span.clone();
 
-            Token::Number(num) => Expression::Literal((num as i32).into()),
-            Token::Bool(b) => Expression::Literal(b.into()),
-            Token::String(s) => Expression::Literal(s.into()),
+    let mut expr = match token.kind {
+        // Unary preceding operator
+        TokenKind::Operator(operator) => {
+            let expr = parse_expression(tokens)?;
+            Expression::UnaryOp{span, operator, operand: Box::new(expr)}
+        } 
 
-            Token::Identifier(identifier) => Expression::Variable(identifier),
+        TokenKind::Number(num) => Expression::Value(span, (num as i32).into()),
+        TokenKind::Bool(b) => Expression::Value(span, b.into()),
+        TokenKind::String(s) => Expression::Value(span, s.into()),
 
-            Token::LeftParen => {
-                let expr = parse_expression(tokens);
-                tokens.next(); // Consume right parenthesis
-                expr
-            }
+        TokenKind::Identifier(identifier) => Expression::Variable(span, identifier),
 
-            // Array literal
-            Token::LeftBracket => {
-                let mut elements = Vec::new();
-
-                while let Some(token) = tokens.peek() {
-                    if matches!(token, Token::RightBracket) {
-                        tokens.next();
-                        break;
-                    }
-
-                    elements.push(parse_expression(tokens));
-
-                    if let Some(Token::Comma) = tokens.peek() {
-                        tokens.next();
-                    }
-                }
-
-                Expression::Array(elements)
-            }
-
-            other => panic!("Unexpected token in expression: {:?}", other),
-        };
-
-        // Check for member access
-        while let Some(token) = tokens.peek() {
-            if matches!(token, Token::Operator(Operator::Dot)) {
-                tokens.next();
-                if let Some(Token::Identifier(k)) = tokens.next() {
-                    expr = Expression::MemberAccess{ target: Box::new(expr), member: k };
-                }
-
-            } else { break; }
+        TokenKind::LeftParen => {
+            let expr = parse_expression(tokens)?;
+            tokens.next(); // Consume right parenthesis
+            expr
         }
 
-        // Check for operators
-        if matches!(tokens.peek(), Some(Token::Operator(op)) 
-            if tokenizer::BINARY_OPERATORS.contains(op))
-        {
-            if let Some(Token::Operator(op)) = tokens.next() {
-                return Expression::BinaryOp {
-                    left: Box::new(expr),
-                    operator: op,
-                    right: Box::new(parse_expression(tokens)),
-                };
+        // Array Value
+        TokenKind::LeftBracket => {
+            let mut elements = Vec::new();
+
+            while let Some(token) = tokens.peek() {
+                if matches!(token.kind, TokenKind::RightBracket) {
+                    tokens.next();
+                    break;
+                }
+
+                elements.push(parse_expression(tokens)?);
+
+                if let Some(token) = tokens.peek()
+                    && matches!(token.kind, TokenKind::Comma) {
+                    tokens.next();
+                }
             }
+
+            Expression::Array(span, elements)
         }
-        expr
 
-    } else {
-        panic!("Unexpected end of tokens while building expression");
-    }
-}
-
-fn parse_shape_expression(tokens: &mut PeekableTokens) -> ShapeExpression {
-    let base = match tokens.next() {
-        Some(Token::Identifier(identifier)) => ShapeExpression::Shape(identifier),
-        Some(Token::Type(kind)) => ShapeExpression::Primitive(kind),
-        other => panic!("Expected shape identifier, got {:?}", other),
+        token => return Err(ParseError::UnexpectedToken { span, token }),
     };
 
-    if let Some(Token::Operator(Operator::LT)) = tokens.peek() {
+    // Check for member access
+    while let Some(token) = tokens.peek() {
+        let span = token.span.clone();
+        if matches!(token.kind, TokenKind::Operator(Operator::Dot)) {
+            tokens.next();
+            if let TokenKind::Identifier(k) = tokens.next().unwrap().kind {
+                expr = Expression::MemberAccess{span,  target: Box::new(expr), member: k };
+            }
+
+        } else { break; }
+    }
+
+    // Check for operators
+    if let Some(token) = tokens.peek() {
+        let span = token.span.clone();
+        if matches!(&token.kind, TokenKind::Operator(op) 
+            if tokenizer::BINARY_OPERATORS.contains(&op))
+        {
+            if let TokenKind::Operator(op) = tokens.next().unwrap().kind {
+                return Ok(Expression::BinaryOp {span, 
+                    left: Box::new(expr),
+                    operator: op,
+                    right: Box::new(parse_expression(tokens)?),
+                });
+            }
+        }
+    }
+    Ok(expr)
+}
+
+fn parse_shape_expression(tokens: &mut PeekableTokens) -> Result<ShapeExpression, ParseError> {
+    let token = tokens.next().unwrap();
+    let span = token.span.clone();
+
+    let base = match token.kind {
+        TokenKind::Identifier(identifier) => ShapeExpression::Shape(identifier),
+        TokenKind::Type(kind) => ShapeExpression::Primitive(kind),
+        other => return Err(ParseError::UnexpectedToken { span, token:other }),
+    };
+
+    if let TokenKind::Operator(Operator::LT) = tokens.peek().unwrap().kind {
         tokens.next(); // consume '<'
         let mut args = Vec::new();
 
         loop {
-            let arg = parse_shape_expression(tokens);
+            let arg = parse_shape_expression(tokens)?;
             args.push(arg);
 
-            match tokens.next() {
-                Some(Token::Comma) => continue,
-                Some(Token::Operator(Operator::GT)) => break,
-                other => panic!("Unexpected token in generic args: {:?}", other),
+            match tokens.next().unwrap().kind {
+                TokenKind::Comma => continue,
+                TokenKind::Operator(Operator::GT) => break,
+                token => return Err(ParseError::UnexpectedToken { span, token }),
             }
         }
 
         let base_identifier = match base {
             ShapeExpression::Shape(identifier) => identifier,
-            other => panic!("{:?} can not be applied", other),
+            other => todo!()
         };
 
-        ShapeExpression::Applied {
+        Ok(ShapeExpression::Applied {
             base: base_identifier,
             args,
-        }
+        })
     } else {
-        base
+        Ok(base)
     }
 }
 
-fn parse_statement(tokens: &mut PeekableTokens) -> Statement {
-    if let Some(token) = tokens.peek() {
-        match token {
+fn parse_statement(tokens: &mut PeekableTokens) -> Result<Statement, ParseError> {
+    let token = tokens.peek().unwrap();
+    let span = token.span.clone();
 
-            // Package import
-            Token::Keyword(Keyword::Using) => {
-                tokens.next(); // consume 'using' keyword
-                let package = match tokens.next() {
-                    Some(Token::String(name)) => name.clone(),
-                    other => panic!("Expected package name after 'using', got {:?}", other),
-                };
+    match &token.kind {
 
-                Statement::Using { package: package }
-            },
+        // Package import
+        TokenKind::Keyword(Keyword::Using) => {
+            tokens.next(); // consume 'using' keyword
+            let package = match tokens.next().unwrap().kind {
+                TokenKind::String(name) => name.clone(),
+                token => return Err(ParseError::UnexpectedToken { span, token }),
+            };
 
-            // Shape declaration
-            Token::Keyword(Keyword::Shape) => {
-                tokens.next(); // consume 'shape' keyword
-                let shape_identifier = match tokens.next() {
-                    Some(Token::Identifier(name)) => name.clone(),
-                    other => panic!(
-                        "Expected shape name after 'shape', got {:?}",
-                        other
-                    ),
-                };
+            Ok(Statement::Using {span, package: package })
+        },
 
-                let mut slot_ids = Vec::new();
-                let mut mappings = Vec::new();
+        // Shape declaration
+        TokenKind::Keyword(Keyword::Shape) => {
+            tokens.next(); // consume 'shape' keyword
+            let shape_identifier = match tokens.next().unwrap().kind {
+                TokenKind::Identifier(name) => name.clone(),
+                token => return Err(ParseError::UnexpectedToken { span, token }),
+            };
 
-                let mut generics = Vec::new();
-                //let mut generic_names = Vec::new();
+            let mut slot_ids = Vec::new();
+            let mut mappings = Vec::new();
 
-                // Establish generics
-                if let Some(Token::Operator(Operator::LT)) = tokens.peek() {
-                    tokens.next(); // consume '<'
+            let mut generics = Vec::new();
+            //let mut generic_names = Vec::new();
 
-                    while let Some(token) = tokens.peek() {
-                        match token {
-                            Token::Identifier(_) => {
-                                let shape_expr = parse_shape_expression(tokens);
-                                generics.push(shape_expr)
-                            }
-                            Token::Comma => { tokens.next(); }
-                            Token::Operator(Operator::GT) => { 
-                                tokens.next();
-                                break
-                            }
-                            _ => panic!("Unexpected token in generic declaration: {:?}", token),
-                        }
-                    }
-                }
+            // Establish generics
+            if let TokenKind::Operator(Operator::LT) = tokens.peek().unwrap().kind {
+                tokens.next(); // consume '<'
 
-                if let Some(Token::LeftBrace) = tokens.next() {
-
-                    // Define slots
-                    while let Some(token) = tokens.peek() {
-                        match token {
-                            Token::Identifier(slot_name) => {
-                                let slot_name = slot_name.clone();
-                                tokens.next();
-
-                                // Type
-                                let value_type = parse_shape_expression(tokens);
-
-                                // Static
-                                let is_static = match tokens.peek() {
-                                    Some(Token::Keyword(Keyword::Static)) => {
-                                        tokens.next();
-                                        true
-                                    }
-                                    _ => false
-                                };
-
-                                // Default
-                                let set_value = match tokens.peek() {
-                                    Some(Token::Operator(Operator::Assign)) => {
-                                        tokens.next();
-                                        Some(parse_expression(tokens))
-                                    }
-                                    _ => None
-                                };
-
-                                slot_ids.push(Azimuth { name: slot_name, value_type, is_static, set_value });
-                            },
-                            Token::RightBrace => {
-                                tokens.next();
-                                break;
-                            },
-                            _ => {
-                                panic!("Unexpected token in shape declaration: {:?}", token);
-                            }
-                        }
-                    }
-                } else {
-                    panic!("Expected '{{' after shape declaration");
-                }
-
-                Statement::DeclareShape { name: shape_identifier, slot_ids, mappings, generics }
-            },
-
-            // Object declaration
-            Token::Keyword(Keyword::Let) => {
-                tokens.next(); // consume 'object' keyword
-                let object_identifier = match tokens.next() {
-                    Some(Token::Identifier(name)) => name.clone(),
-                    other => panic!(
-                        "Expected object name after 'object', got {:?}",
-                        other
-                    ),
-                };
-
-                Statement::DeclareObject { name: object_identifier }
-            },
-
-            // print
-            Token::Keyword(Keyword::Print) => {
-                tokens.next(); // consume 'print' keyword
-                Statement::Print{ expr: parse_expression(tokens)}
-            },
-
-            // Object Identifier
-            Token::Identifier(_) => {
-                // Build member call
-                let object = parse_expression(tokens);
-                
-                match tokens.peek() {
-                    // Attach
-                    Some(Token::Operator(Operator::Attach)) => {
-                        tokens.next(); // consume operator
-                        
-                        let shape = parse_shape_expression(tokens);
-
-                        // Check for mappings
-                        if let Some(Token::LeftBrace) = tokens.peek() {
-                            tokens.next(); // consume '{'
-                            let mut mappings = Vec::new();
-
-                            while let Some(token) = tokens.next() {
-                                match token {
-                                    // From slot mapping
-                                    Token::Identifier(from_slot) => {
-
-                                        // Expect '->' operator
-                                        match tokens.next() {
-                                            Some(Token::Operator(Operator::Arrow)) => {
-
-                                                // Expect to slot identifier
-                                                match tokens.next() {
-                                                    Some(Token::Identifier(to_slot)) => mappings.push(Mapping { from_slot, to_slot }),
-                                                    other => panic!("Expected slot name after -> in mapping, got {:?}", other),
-                                                }
-
-                                            },
-                                            other => panic!("Expected '->' operator in mapping, got {:?}", other),
-                                        }
-                                    },
-                                    Token::RightBrace => break,
-                                    _ => panic!("Unexpected token in mappings: {:?}", token),
-                                }
-                            }
-
-                            Statement::AttachWithRemap { object, shape, mappings }
-                        } else {
-                            Statement::Attach { object, shape }
-                        }
-                    }
-
-                    //Detach
-                    Some(Token::Operator(Operator::Detach)) => {
-                        tokens.next(); // consume operator
-                        
-                        let shape = parse_shape_expression(tokens);
-
-                        Statement::Detach { object, shape }
-                    }
-
-                    // Assign
-                    Some(Token::Operator(Operator::Assign)) => {
-                        tokens.next(); // consume operator
-                        let value = parse_expression(tokens);
-                        Statement::Assign{ target: object, value }
-                    }
-                    Some(Token::Operator(Operator::AddAssign)) => {
-                        tokens.next(); // consume operator
-                        let value = parse_expression(tokens);
-                        Statement::AssignAugmented{ target: object, value, operator:Operator::Add }
-                    }
-                    Some(Token::Operator(Operator::SubAssign)) => {
-                        tokens.next(); // consume operator
-                        let value = parse_expression(tokens);
-                        Statement::AssignAugmented{ target: object, value, operator:Operator::Sub }
-                    }
-                    Some(Token::Operator(Operator::MulAssign)) => {
-                        tokens.next(); // consume operator
-                        let value = parse_expression(tokens);
-                        Statement::AssignAugmented{ target: object, value, operator:Operator::Mul }
-                    }
-                    Some(Token::Operator(Operator::DivAssign)) => {
-                        tokens.next(); // consume operator
-                        let value = parse_expression(tokens);
-                        Statement::AssignAugmented{ target: object, value, operator:Operator::Div }
-                    }
-                    Some(Token::Operator(Operator::ModAssign)) => {
-                        tokens.next(); // consume operator
-                        let value = parse_expression(tokens);
-                        Statement::AssignAugmented{ target: object, value, operator:Operator::Mod }
-                    }
-
-                    other => { panic!("Unexpected operator after object name: {:?}", other); }
-                }
-            },
-
-            // Blocking
-            Token::LeftBrace => {
-                tokens.next(); // Consume brace
-
-                // Add current statements to stack
-                let mut statements = Vec::new();
                 while let Some(token) = tokens.peek() {
-                    match token {
-                        Token::RightBrace => {
-                            tokens.next(); // Consume brace
+                    match &token.kind {
+                        TokenKind::Identifier(_) => {
+                            let shape_expr = parse_shape_expression(tokens)?;
+                            generics.push(shape_expr)
+                        }
+                        TokenKind::Comma => { tokens.next(); }
+                        TokenKind::Operator(Operator::GT) => { 
+                            tokens.next();
                             break
                         }
-                        Token::EOF => panic!("End of file reached before block closed"),
-                        _ => statements.push(parse_statement(tokens))
+                        token => return Err(ParseError::UnexpectedToken { span, token:token.clone() }),
+                    }
+                }
+            }
+
+            let token = tokens.next().unwrap();
+            if let TokenKind::LeftBrace = token.kind {
+
+                // Define slots
+                while let Some(token) = tokens.peek() {
+                    match &token.kind {
+                        TokenKind::Identifier(slot_name) => {
+                            let slot_name = slot_name.clone();
+                            tokens.next();
+
+                            // Type
+                            let value_type = parse_shape_expression(tokens)?;
+
+                            // Static
+                            let is_static = match tokens.peek().unwrap().kind {
+                                TokenKind::Keyword(Keyword::Static) => {
+                                    tokens.next();
+                                    true
+                                }
+                                _ => false
+                            };
+
+                            // Default
+                            let set_value = match tokens.peek().unwrap().kind {
+                                TokenKind::Operator(Operator::Assign) => {
+                                    tokens.next();
+                                    Some(parse_expression(tokens)?)
+                                }
+                                _ => None
+                            };
+
+                            slot_ids.push(Azimuth { name: slot_name, value_type, is_static, set_value });
+                        },
+                        TokenKind::RightBrace => {
+                            tokens.next();
+                            break;
+                        },
+                        token => return Err(ParseError::UnexpectedToken{span, token:token.clone()}),
+                    }
+                }
+            } else {
+                return Err(ParseError::UnexpectedToken{span, token:token.kind});
+            }
+
+            Ok(Statement::DeclareShape { span, name: shape_identifier, slot_ids, mappings, generics })
+        },
+
+        // Object declaration
+        TokenKind::Keyword(Keyword::Let) => {
+            tokens.next(); // consume 'object' keyword
+            let object_identifier = match tokens.next().unwrap().kind {
+                TokenKind::Identifier(name) => name.clone(),
+                token => return Err(ParseError::UnexpectedToken { span, token }),
+            };
+
+            Ok(Statement::DeclareObject {span, name: object_identifier })
+        },
+
+        // print
+        TokenKind::Keyword(Keyword::Print) => {
+            tokens.next(); // consume 'print' keyword
+            Ok(Statement::Print{span, expr: parse_expression(tokens)?})
+        },
+
+        // Object Identifier
+        TokenKind::Identifier(_) => {
+            // Build member call
+            let object = parse_expression(tokens)?;
+            
+            let token = tokens.peek().unwrap();
+            match &token.kind {
+                // Attach
+                TokenKind::Operator(Operator::Attach) => {
+                    tokens.next(); // consume operator
+                    
+                    let shape = parse_shape_expression(tokens)?;
+
+                    // Check for mappings
+                    if let TokenKind::LeftBrace = tokens.peek().unwrap().kind {
+                        tokens.next(); // consume '{'
+                        let mut mappings = Vec::new();
+
+                        while let Some(token) = tokens.next() {
+                            match token.kind {
+                                // From slot mapping
+                                TokenKind::Identifier(from_slot) => {
+
+                                    // Expect '->' operator
+                                    match tokens.next().unwrap() {
+                                        token if matches!(token.kind, TokenKind::Operator(Operator::Arrow)) => {
+
+                                            // Expect to slot identifier
+                                            match tokens.next().unwrap().kind {
+                                                TokenKind::Identifier(to_slot) => mappings.push(Mapping { from_slot, to_slot }),
+                                                token => return Err(ParseError::IncorrectToken { span, token, expected:format!("Shape") }),
+                                            }
+
+                                        },
+                                        token => return Err(ParseError::IncorrectToken { span, token:token.kind, expected:format!("->") }),
+                                    }
+                                },
+                                TokenKind::RightBrace => break,
+                                token => return Err(ParseError::UnexpectedToken { span, token }),
+                            }
+                        }
+
+                        Ok(Statement::AttachWithRemap {span, object, shape, mappings })
+                    } else {
+                        Ok(Statement::Attach {span, object, shape })
                     }
                 }
 
-                Statement::Block(statements)
-            },
+                //Detach
+                TokenKind::Operator(Operator::Detach) => {
+                    tokens.next(); // consume operator
+                    
+                    let shape = parse_shape_expression(tokens)?;
 
-            // If
-            Token::Keyword(Keyword::If) => {
-                tokens.next(); // Consume if
+                    Ok(Statement::Detach {span, object, shape })
+                }
 
-                let condition = parse_expression(tokens);
-                let true_statement = parse_statement(tokens);
+                // Assign
+                TokenKind::Operator(Operator::Assign) => {
+                    tokens.next(); // consume operator
+                    let value = parse_expression(tokens)?;
+                    Ok(Statement::Assign{ span, target: object, value })
+                }
+                TokenKind::Operator(Operator::AddAssign) => {
+                    tokens.next(); // consume operator
+                    let value = parse_expression(tokens)?;
+                    Ok(Statement::AssignAugmented{ span, target: object, value, operator:Operator::Add })
+                }
+                TokenKind::Operator(Operator::SubAssign) => {
+                    tokens.next(); // consume operator
+                    let value = parse_expression(tokens)?;
+                    Ok(Statement::AssignAugmented{ span, target: object, value, operator:Operator::Sub })
+                }
+                TokenKind::Operator(Operator::MulAssign) => {
+                    tokens.next(); // consume operator
+                    let value = parse_expression(tokens)?;
+                    Ok(Statement::AssignAugmented{ span, target: object, value, operator:Operator::Mul })
+                }
+                TokenKind::Operator(Operator::DivAssign) => {
+                    tokens.next(); // consume operator
+                    let value = parse_expression(tokens)?;
+                    Ok(Statement::AssignAugmented{ span, target: object, value, operator:Operator::Div })
+                }
+                TokenKind::Operator(Operator::ModAssign) => {
+                    tokens.next(); // consume operator
+                    let value = parse_expression(tokens)?;
+                    Ok(Statement::AssignAugmented{ span, target: object, value, operator:Operator::Mod })
+                }
 
-                let else_statement = match tokens.peek(){
-                    Some(Token::Keyword(Keyword::Else)) => {
-                        tokens.next(); // Consume else
-                        Some(parse_statement(tokens))
+                token => return Err(ParseError::UnexpectedToken { span, token:token.clone() }),
+            }
+        },
+
+        // Blocking
+        TokenKind::LeftBrace => {
+            tokens.next(); // Consume brace
+
+            // Add current statements to stack
+            let mut statements = Vec::new();
+            while let Some(token) = tokens.peek() {
+                match token.kind {
+                    TokenKind::RightBrace => {
+                        tokens.next(); // Consume brace
+                        break
                     }
-                    _ => None
-                };
+                    TokenKind::EOF => { return Err(ParseError::UnexpectedToken { span, token:token.kind.clone() }); }
+                    _ => statements.push(parse_statement(tokens)?)
+                }
+            }
 
-                Statement::If{ condition, true_statement: Box::new(true_statement), else_statement: Box::new(else_statement) }
-            },
+            Ok(Statement::Block(statements))
+        },
 
-            // While
-            Token::Keyword(Keyword::While) => {
-                tokens.next(); // Consume while
+        // If
+        TokenKind::Keyword(Keyword::If) => {
+            tokens.next(); // Consume if
 
-                let condition = parse_expression(tokens);
-                let statement = parse_statement(tokens);
+            let condition = parse_expression(tokens)?;
+            let true_statement = parse_statement(tokens)?;
 
-                Statement::While{ condition, statement: Box::new(statement) }
-            },
+            let else_token = tokens.peek().unwrap();
+            let else_statement = match else_token.kind {
+                TokenKind::Keyword(Keyword::Else) => {
+                    tokens.next(); // Consume else
+                    Some(parse_statement(tokens)?)
+                }
+                _ => None
+            };
 
-            _ => panic!("Unexpected token: {:?}", token),
+            Ok(Statement::If{ span, condition, true_statement: Box::new(true_statement), else_statement: Box::new(else_statement) })
+        },
+
+        // While
+        TokenKind::Keyword(Keyword::While) => {
+            tokens.next(); // Consume while
+
+            let condition = parse_expression(tokens)?;
+            let statement = parse_statement(tokens)?;
+
+            Ok(Statement::While{span, condition, statement: Box::new(statement) })
+        },
+
+        // Returns
+        TokenKind::Keyword(Keyword::Break) => {
+            tokens.next();
+            Ok(Statement::Break{span})
         }
-    } else {
-        panic!("EOF")
+        TokenKind::Keyword(Keyword::Continue) => {
+            tokens.next();
+            Ok(Statement::Continue{span})
+        }
+        TokenKind::Keyword(Keyword::Return) => {
+            tokens.next();
+            Ok(Statement::Return{span, value:parse_expression(tokens)?})
+        }
+        TokenKind::Keyword(Keyword::Throw) => {
+            tokens.next();
+            Ok(Statement::Throw{span, message:parse_expression(tokens)?})
+        }
+
+        token => Err(ParseError::UnexpectedToken { span, token:token.clone() }),
     }
 }
 
-pub fn parse(input: Vec<Token>) -> Vec<Statement> {
+pub fn parse(input: Vec<Token>) -> Result<Vec<Statement>, ParseError> {
     let mut statements = Vec::new();
     let mut tokens = input.into_iter().peekable();
 
     while let Some(token) = tokens.peek() {
-        match token {
-            Token::EOF => break,
-            _ => statements.push(parse_statement(&mut tokens))
+        match token.kind {
+            TokenKind::EOF => break,
+            _ => statements.push(parse_statement(&mut tokens)?)
         }
     }
     
     println!("\n Parsed Ast: \n{:?}", statements);
-    statements
+    Ok(statements)
 }

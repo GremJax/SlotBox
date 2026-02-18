@@ -1,3 +1,5 @@
+use std::fmt;
+
 use crate::ValueKind;
 use crate::Value;
 
@@ -52,12 +54,24 @@ pub enum Keyword {
     Static, Func, Sealed, PSelf,
     If, Else, Switch,
     While, For, In,
-    Break, Return, Continue,
+    Break, Return, Continue, Throw,
     Print,
 }
 
 #[derive(Debug, Clone)]
-pub enum Token{
+pub struct Span {
+    pub line: usize,
+    pub column: usize,
+}
+
+impl fmt::Display for Span {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "[{}:{}]", self.line, self.column)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum TokenKind{
     Identifier(String),
     Number(f64),
     Bool(bool),
@@ -76,46 +90,65 @@ pub enum Token{
     EOF,
 }
 
-static WHITESPACE: &[char] = &[' ', '\t', '\n', ';'];
+#[derive(Debug, Clone)]
+pub struct Token {
+    pub span: Span,
+    pub kind: TokenKind,
+}
+
+static WHITESPACE: &[char] = &[' ', '\t', ';'];
 
 pub fn tokenize(input: &str) -> Vec<Token> {
     let mut tokens = Vec::new();
     let mut chars = input.chars().peekable();
+    
+    let mut line = 1;
+    let mut column = 1;
 
     while let Some(&ch) = chars.peek() {
+        let span = Span{line, column};
+
         match ch {
             ws if WHITESPACE.contains(&ws) => { chars.next(); },
             '\n' => {
-                //tokens.push(Token::NewLine);
                 chars.next();
+                line += 1;
+                column = 0;
             },
             '(' => {
-                tokens.push(Token::LeftParen);
+                tokens.push(Token{span, kind:TokenKind::LeftParen});
                 chars.next();
+                column += 1;
             },
             ')' => {
-                tokens.push(Token::RightParen);
+                tokens.push(Token{span, kind:TokenKind::RightParen});
                 chars.next();
+                column += 1;
             },
             '{' => {
-                tokens.push(Token::LeftBrace);
+                tokens.push(Token{span, kind:TokenKind::LeftBrace});
                 chars.next();
+                column += 1;
             },
             '}' => {
-                tokens.push(Token::RightBrace);
+                tokens.push(Token{span, kind:TokenKind::RightBrace});
                 chars.next();
+                column += 1;
             },
             '[' => {
-                tokens.push(Token::LeftBracket);
+                tokens.push(Token{span, kind:TokenKind::LeftBracket});
                 chars.next();
+                column += 1;
             },
             ']' => {
-                tokens.push(Token::RightBracket);
+                tokens.push(Token{span, kind:TokenKind::RightBracket});
                 chars.next();
+                column += 1;
             },
             ',' => {
-                tokens.push(Token::Comma);
+                tokens.push(Token{span, kind:TokenKind::Comma});
                 chars.next();
+                column += 1;
             },
             '0'..='9' => {
                 let mut number = String::new();
@@ -123,11 +156,12 @@ pub fn tokenize(input: &str) -> Vec<Token> {
                     if ch.is_digit(10) || ch == '.' {
                         number.push(ch);
                         chars.next();
+                        column += 1;
                     } else {
                         break;
                     }
                 }
-                tokens.push(Token::Number(number.parse().unwrap()));
+                tokens.push(Token{span, kind:TokenKind::Number(number.parse().unwrap())});
             },
             '"' => {
                 chars.next(); // skip opening quote
@@ -138,10 +172,11 @@ pub fn tokenize(input: &str) -> Vec<Token> {
                     } else {
                         string.push(ch);
                         chars.next();
+                        column += 1;
                     }
                 }
                 chars.next(); // skip closing quote
-                tokens.push(Token::String(string));
+                tokens.push(Token{span, kind:TokenKind::String(string)});
             },
             _ if ch.is_alphabetic() || ch == '_' => {
                 let mut identifier = String::new();
@@ -149,41 +184,42 @@ pub fn tokenize(input: &str) -> Vec<Token> {
                     if ch.is_alphanumeric() || ch == '_' {
                         identifier.push(ch);
                         chars.next();
+                        column += 1;
                     } else {
                         break;
                     }
                 }
 
-                tokens.push(match identifier.as_str() {
-                    "true" => Token::Bool(true),
-                    "false" => Token::Bool(false),
+                tokens.push(Token{span, kind: match identifier.as_str() {
+                    "true" => TokenKind::Bool(true),
+                    "false" => TokenKind::Bool(false),
 
-                    "using" => Token::Keyword(Keyword::Using),
-                    "shape" => Token::Keyword(Keyword::Shape),
-                    "let" => Token::Keyword(Keyword::Let),
-                    "static" => Token::Keyword(Keyword::Static),
-                    "func" => Token::Keyword(Keyword::Func),
-                    "self" => Token::Keyword(Keyword::PSelf),
-                    "sealed" => Token::Keyword(Keyword::Sealed),
-                    "if" => Token::Keyword(Keyword::If),
-                    "else" => Token::Keyword(Keyword::Else),
-                    "switch" => Token::Keyword(Keyword::Switch),
-                    "while" => Token::Keyword(Keyword::While),
-                    "for" => Token::Keyword(Keyword::For),
-                    "in" => Token::Keyword(Keyword::In),
-                    "break" => Token::Keyword(Keyword::Break),
-                    "return" => Token::Keyword(Keyword::Return),
-                    "continue" => Token::Keyword(Keyword::Continue),
-                    "print" => Token::Keyword(Keyword::Print),
+                    "using" => TokenKind::Keyword(Keyword::Using),
+                    "shape" => TokenKind::Keyword(Keyword::Shape),
+                    "let" => TokenKind::Keyword(Keyword::Let),
+                    "static" => TokenKind::Keyword(Keyword::Static),
+                    "func" => TokenKind::Keyword(Keyword::Func),
+                    "self" => TokenKind::Keyword(Keyword::PSelf),
+                    "sealed" => TokenKind::Keyword(Keyword::Sealed),
+                    "if" => TokenKind::Keyword(Keyword::If),
+                    "else" => TokenKind::Keyword(Keyword::Else),
+                    "switch" => TokenKind::Keyword(Keyword::Switch),
+                    "while" => TokenKind::Keyword(Keyword::While),
+                    "for" => TokenKind::Keyword(Keyword::For),
+                    "in" => TokenKind::Keyword(Keyword::In),
+                    "break" => TokenKind::Keyword(Keyword::Break),
+                    "return" => TokenKind::Keyword(Keyword::Return),
+                    "continue" => TokenKind::Keyword(Keyword::Continue),
+                    "throw" => TokenKind::Keyword(Keyword::Throw),
+                    "print" => TokenKind::Keyword(Keyword::Print),
 
-                    "int32" => Token::Type(ValueKind::Int32),
-                    "bool" => Token::Type(ValueKind::Bool),
-                    "string" => Token::Type(ValueKind::String),
-                    "void" => Token::Type(ValueKind::None),
+                    "int32" => TokenKind::Type(ValueKind::Int32),
+                    "bool" => TokenKind::Type(ValueKind::Bool),
+                    "string" => TokenKind::Type(ValueKind::String),
+                    "void" => TokenKind::Type(ValueKind::None),
 
-                    _ => Token::Identifier(identifier),
-                });
-
+                    _ => TokenKind::Identifier(identifier),
+                }});
             },
             _ => {
                 let mut operator = String::new();
@@ -193,11 +229,15 @@ pub fn tokenize(input: &str) -> Vec<Token> {
 
                     if !WHITESPACE.contains(&ch) && !ch.is_alphanumeric() && ch != '_' {
                         chars.next();
+                        column += 1;
 
                         // Single line comment
                         if ch == '/' && chars.peek() == Some(&'/') {
                             while let Some(ch) = chars.next() {
+                                column += 1;
                                 if ch == '\n' {
+                                    line += 1;
+                                    column = 0;
                                     break;
                                 }
                             }
@@ -208,6 +248,11 @@ pub fn tokenize(input: &str) -> Vec<Token> {
                         // Multi line comment
                         if ch == '/' && chars.peek() == Some(&'*') {
                             while let Some(ch) = chars.next() {
+                                column += 1;
+                                if ch == '\n' {
+                                    line += 1;
+                                    column = 0;
+                                }
                                 if ch == '*' && chars.peek() == Some(&'/') {
                                     chars.next();
                                     break;
@@ -224,7 +269,7 @@ pub fn tokenize(input: &str) -> Vec<Token> {
 
                 if comment_line { continue; }
                 
-                tokens.push( Token::Operator(match operator.as_str() {
+                tokens.push(Token{span:span.clone(), kind:TokenKind::Operator(match operator.as_str() {
                     "+" => Operator::Add,
                     "-" => Operator::Sub,
                     "/" => Operator::Div,
@@ -277,12 +322,12 @@ pub fn tokenize(input: &str) -> Vec<Token> {
                     "?" => Operator::Question,
                     "??" => Operator::DQuestion,
                     
-                    _ => panic!("Unknown operator: {}", operator)
-                }))
+                    _ => panic!("{}: Unknown operator: {}", span, operator)
+                })});
             }
         }
     }
 
-    tokens.push(Token::EOF);
+    tokens.push(Token{span:Span{line, column}, kind:TokenKind::EOF});
     tokens
 }

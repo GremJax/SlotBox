@@ -1,4 +1,4 @@
-use crate::tokenizer::Operator;
+use crate::tokenizer::{Operator, Span};
 use crate::{
     Mapping, ObjectId, PrimitiveValue, Runtime, ShapeId, Value, ValueKind, executor,
     analyzer::{ResolvedExpression, ResolvedShapeExpression, ResolvedStatement, Symbol},
@@ -6,10 +6,36 @@ use crate::{
 use std::collections::{HashMap, HashSet};
 use std::fs;
 
+#[derive(Debug, Clone)]
+pub enum RuntimeError {
+    Error { span: Span, message: String },
+    Throw { span: Span, message: String },
+    TypeMismatch { span: Span, found: Value, expected: ValueKind },
+    UnexpectedBreakout { span: Span },
+    InvalidOperator { span: Span, operator: Operator, operand: ValueKind },
+}
+
+impl std::fmt::Display for RuntimeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RuntimeError::Error { span, message } =>
+                write!(f, "{}: {}", span, message),
+            RuntimeError::Throw { span, message } =>
+                write!(f, "{}: {}", span, message),
+            RuntimeError::TypeMismatch { span, found, expected } =>
+                write!(f, "{}: {:?} does not match expected type {:?}", span, found, expected),
+            RuntimeError::UnexpectedBreakout { span } =>
+                write!(f, "{}: Unexpected breakout", span),
+            RuntimeError::InvalidOperator { span, operator, operand } =>
+                write!(f, "{}: {:?} is invalid operator for {:?}", span, operator, operand),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct ShapeInstance {
-    pub(crate) id: ShapeId,
-    pub(crate) generics: Vec<ValueKind>,
+    pub id: ShapeId,
+    pub generics: Vec<ValueKind>,
 }
 
 pub const OBJECT_INSTANCE: ShapeInstance = ShapeInstance{id:0, generics:Vec::new()};
@@ -18,98 +44,98 @@ pub fn evaluate_shape(runtime: &Runtime, shape:ResolvedShapeExpression) -> Value
     shape.kind()
 }
 
-pub fn evaluate(runtime: &Runtime, expression:ResolvedExpression) -> Value {
+pub fn evaluate(runtime: &Runtime, expression:ResolvedExpression) -> Result<Value, RuntimeError> {
     match expression {
-        ResolvedExpression::Literal(value) => value,
-        ResolvedExpression::Array(expressions) => {
+        ResolvedExpression::Value(_, value) => Ok(value),
+        ResolvedExpression::Array(_, expressions) => {
             let mut values = Vec::new();
             for item in expressions {
-                values.push(Box::new(evaluate(runtime, item)));
+                values.push(Box::new(evaluate(runtime, item)?));
             }
-            Value::Array(values)
+            Ok(Value::Array(values))
         },
-        ResolvedExpression::Variable(Symbol::Object(k)) => Value::Single(PrimitiveValue::ObjectId(OBJECT_INSTANCE, k.id)),
+        ResolvedExpression::Variable(_, Symbol::Object(k)) => Ok(Value::Single(PrimitiveValue::ObjectId(OBJECT_INSTANCE, k.id))),
 
-        ResolvedExpression::UnaryOp { operator, operand } => {
-            match (operator, evaluate(runtime, *operand)) {
+        ResolvedExpression::UnaryOp { span, operator, operand } => {
+            match (operator, evaluate(runtime, *operand)?) {
                 (op, Value::Single(PrimitiveValue::Bool(val))) => 
                     match op {
-                        Operator::Not => (!val).into(),
-                        other => panic!("Invalid unary operator on bool: {:?}{:?}", other, val),
+                        Operator::Not => Ok((!val).into()),
+                        operator => Err(RuntimeError::InvalidOperator { span, operator, operand:ValueKind::Bool })
                     },
                 (op, Value::Single(PrimitiveValue::Int32(val))) => 
                     match op {
-                        Operator::Inc => (val + 1).into(),
-                        Operator::Dec => (val - 1).into(),
-                        Operator::BWNot => (!val).into(),
-                        other => panic!("Invalid unary operator on int32: {:?}{:?}", other, val),
+                        Operator::Inc => Ok((val + 1).into()),
+                        Operator::Dec => Ok((val - 1).into()),
+                        Operator::BWNot => Ok((!val).into()),
+                        operator => Err(RuntimeError::InvalidOperator { span, operator, operand:ValueKind::Int32 })
                     },
-                _ => Value::Empty
+                _ => Ok(Value::Empty)
             }
         },
 
-        ResolvedExpression::BinaryOp { left, operator, right } => {
-            match (evaluate(runtime, *left), operator, evaluate(runtime, *right)) { 
+        ResolvedExpression::BinaryOp { span, left, operator, right } => {
+            match (evaluate(runtime, *left)?, operator, evaluate(runtime, *right)?) { 
                 
                 // Bool - Bool
                 (Value::Single(PrimitiveValue::Bool(left)), op, Value::Single(PrimitiveValue::Bool(right))) => 
                     match op {
-                        Operator::Equal => (left == right).into(),
-                        Operator::NEqual => (left != right).into(),
-                        Operator::And => (left && right).into(),
-                        Operator::Or => (left || right).into(),
-                        other => panic!("Invalid binary operator on bools: {:?} {:?} {:?}", left, other, right),
+                        Operator::Equal => Ok((left == right).into()),
+                        Operator::NEqual => Ok((left != right).into()),
+                        Operator::And => Ok((left && right).into()),
+                        Operator::Or => Ok((left || right).into()),
+                        operator => Err(RuntimeError::InvalidOperator { span, operator, operand: ValueKind::Bool }),
                     },
                       
                 // Int - Int
                 (Value::Single(PrimitiveValue::Int32(left)), op, Value::Single(PrimitiveValue::Int32(right))) => 
                     match op {
-                        Operator::Equal => (left == right).into(),
-                        Operator::NEqual => (left != right).into(),
-                        Operator::LT => (left < right).into(),
-                        Operator::GT => (left > right).into(),
-                        Operator::LTE => (left <= right).into(),
-                        Operator::GTE => (left >= right).into(),
+                        Operator::Equal => Ok((left == right).into()),
+                        Operator::NEqual => Ok((left != right).into()),
+                        Operator::LT => Ok((left < right).into()),
+                        Operator::GT => Ok((left > right).into()),
+                        Operator::LTE => Ok((left <= right).into()),
+                        Operator::GTE => Ok((left >= right).into()),
                         
-                        Operator::Add => (left + right).into(),
-                        Operator::Sub => (left - right).into(),
-                        Operator::Mul => (left * right).into(),
-                        Operator::Div => (left / right).into(),
-                        Operator::Mod => (left % right).into(),
+                        Operator::Add => Ok((left + right).into()),
+                        Operator::Sub => Ok((left - right).into()),
+                        Operator::Mul => Ok((left * right).into()),
+                        Operator::Div => Ok((left / right).into()),
+                        Operator::Mod => Ok((left % right).into()),
 
-                        Operator::BWAnd => (left & right).into(),
-                        Operator::BWOr => (left | right).into(),
-                        Operator::BWXor => (left ^ right).into(),
-                        Operator::BWShiftL => (left << right).into(),
-                        Operator::BWShiftR => (left >> right).into(),
+                        Operator::BWAnd => Ok((left & right).into()),
+                        Operator::BWOr => Ok((left | right).into()),
+                        Operator::BWXor => Ok((left ^ right).into()),
+                        Operator::BWShiftL => Ok((left << right).into()),
+                        Operator::BWShiftR => Ok((left >> right).into()),
                         
-                        Operator::Range => create_range(left, right),
-                        Operator::RangeLT => create_range(left, right - 1),
+                        Operator::Range => Ok(create_range(left, right)),
+                        Operator::RangeLT => Ok(create_range(left, right - 1)),
                         
-                        other => panic!("Invalid binary operator on ints: {:?} {:?} {:?}", left, other, right),
+                        operator => Err(RuntimeError::InvalidOperator { span, operator, operand: ValueKind::Int32 }),
                     },
                     
                 // String - String
                 (Value::Single(PrimitiveValue::String(left)), op, Value::Single(PrimitiveValue::String(right))) => 
                     match op {
-                        Operator::Equal => (left == right).into(),
-                        Operator::NEqual => (left != right).into(),
+                        Operator::Equal => Ok((left == right).into()),
+                        Operator::NEqual => Ok((left != right).into()),
                         
-                        Operator::Add => (left + &right).into(),
+                        Operator::Add => Ok((left + &right).into()),
                         
-                        other => panic!("Invalid operator {:?}", other)
+                        operator => Err(RuntimeError::InvalidOperator { span, operator, operand: ValueKind::String }),
                     },
 
-                _ => Value::Empty
+                _ => Ok(Value::Empty)
             }
         },
         
-        ResolvedExpression::MemberAccess{ target, member} => {
-            match (evaluate(runtime, *target), member) {
+        ResolvedExpression::MemberAccess{ span, target, member} => {
+            match (evaluate(runtime, *target)?, member) {
                 (Value::Single(PrimitiveValue::ObjectId(_, id)), Symbol::Azimuth(azimuth)) => {
-                    runtime.get_slot_value(id, azimuth.id).unwrap_or(&Value::Empty).clone()
+                    Ok(runtime.get_slot_value(id, azimuth.id).unwrap_or(&Value::Empty).clone())
                 }
-                (other, member) => panic!("Member access not permitted for {:?}.{:?}", other, member)
+                (other, member) => Err(RuntimeError::Error{span, message:format!("Member access not permitted for {:?}.{:?}", other, member)}),
             }
         }
 
@@ -117,14 +143,14 @@ pub fn evaluate(runtime: &Runtime, expression:ResolvedExpression) -> Value {
     }
 }
 
-pub fn evaluate_mut(runtime: &mut Runtime, expression:ResolvedExpression) -> Option<&mut Value> {
+pub fn evaluate_mut(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<Option<&mut Value>, RuntimeError> {
     match expression {
-        ResolvedExpression::MemberAccess{ target, member} => {
-            match (evaluate(runtime, *target), member) {
+        ResolvedExpression::MemberAccess{ span, target, member} => {
+            match (evaluate(runtime, *target)?, member) {
                 (Value::Single(PrimitiveValue::ObjectId(_, id)), Symbol::Azimuth(azimuth)) => {
-                    runtime.get_slot_value_mut(id, azimuth.id)
+                    Ok(runtime.get_slot_value_mut(id, azimuth.id))
                 }
-                (other, member) => panic!("Member access not permitted for {:?}.{:?}", other, member)
+                (other, member) => Err(RuntimeError::Error{span, message:format!("Member access not permitted for {:?}.{:?}", other, member)}),
             }
         }
         other => panic!("Invalid mutable expression: {:?}", other)
@@ -139,59 +165,91 @@ pub fn create_range(from: i32, to: i32) -> Value {
     Value::Array(range)
 }
 
-pub fn execute(runtime: &mut Runtime, ast: Vec<ResolvedStatement>) {
+pub fn execute(runtime: &mut Runtime, ast: Vec<ResolvedStatement>) -> Result<ExecFlow, RuntimeError> {
     for statement in ast {
-        execute_statement(runtime, statement);
+        match execute_statement(runtime, statement)? {
+            ExecFlow::Normal(_) => {},
+            ExecFlow::Break(span) => {
+                return Err(RuntimeError::UnexpectedBreakout{span});
+            },
+            ExecFlow::Continue(span) => {
+                return Err(RuntimeError::UnexpectedBreakout{span});
+            },
+            ExecFlow::Return(span, _) => {
+                return Err(RuntimeError::UnexpectedBreakout{span});
+            },
+            ExecFlow::Error { span, message } => {
+                return Err(RuntimeError::Throw{span, message});
+            }
+        }
     }
+    Ok(ExecFlow::Normal(Span{line:0,column:0}))
 }
 
-pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) {
+#[derive(Debug, Clone)]
+pub enum ExecFlow {
+    Normal(Span),
+    Break(Span),
+    Continue(Span),
+    Return(Span, Value),
+    Error{span:Span, message:String},
+}
+
+pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) -> Result<ExecFlow, RuntimeError> {
     match statement {
-        ResolvedStatement::Using { ast} => {
-            executor::execute(runtime, ast);
+        ResolvedStatement::Using { span, ast} => {
+            executor::execute(runtime, ast)?;
+            Ok(ExecFlow::Normal(span))
         },
 
-        ResolvedStatement::Print { expr } => {
-            match evaluate(runtime, expr) {
+        ResolvedStatement::Print { span, expr } => {
+            match evaluate(runtime, expr)? {
                 Value::Single(PrimitiveValue::String(k)) => println!("{}", k),
                 Value::Single(PrimitiveValue::ObjectId(_, id)) => runtime.print_object(id),
                 Value::Single(k) => println!("{:?}", k),
-                other => panic!("Failed to print {:?}", other),
+                Value::Array(k) => println!("{:?}", k),
+                other => { return Err(RuntimeError::TypeMismatch{span, found: other, expected: ValueKind::String}); }
             }
+            Ok(ExecFlow::Normal(span))
         },
 
-        ResolvedStatement::DeclareShape { symbol: Symbol::Shape(info) } => {
+        ResolvedStatement::DeclareShape { span, symbol: Symbol::Shape(info) } => {
             runtime.create_shape(info);
+            Ok(ExecFlow::Normal(span))
         },
 
-        ResolvedStatement::DeclareObject { symbol: Symbol::Object(id) } => {
+        ResolvedStatement::DeclareObject { span, symbol: Symbol::Object(id) } => {
             runtime.create_object(id);
+            Ok(ExecFlow::Normal(span))
         },
 
-        ResolvedStatement::Attach { object, shape} => {
-            match (evaluate(runtime, object), evaluate_shape(runtime, shape)) {
+        ResolvedStatement::Attach { span, object, shape} => {
+            match (evaluate(runtime, object)?, evaluate_shape(runtime, shape)) {
                 (Value::Single(PrimitiveValue::ObjectId(_, object_id)), ValueKind::Shape(shape_inst)) => runtime.attach_shape(object_id, shape_inst),
-                (object, shape) => panic!("Could not attach {:?} to {:?}", shape, object)
+                (object, shape) => return Err(RuntimeError::Error{span, message:format!("Could not attach {:?} to {:?}", shape, object)})
             }
+            Ok(ExecFlow::Normal(span))
         },
 
-        ResolvedStatement::Detach { object, shape } => {
-            match (evaluate(runtime, object), evaluate_shape(runtime, shape)) {
+        ResolvedStatement::Detach { span, object, shape } => {
+            match (evaluate(runtime, object)?, evaluate_shape(runtime, shape)) {
                 (Value::Single(PrimitiveValue::ObjectId(_, object_id)), ValueKind::Shape(shape_inst)) => runtime.detach_shape(object_id, shape_inst),
-                (object, shape) => panic!("Could not detach {:?} from {:?}", shape, object)
+                (object, shape) => return Err(RuntimeError::Error{span, message:format!("Could not detach {:?} from {:?}", shape, object)})
             }
+            Ok(ExecFlow::Normal(span))
         },
 
-        ResolvedStatement::AddMapping { object, mapping } => {
-            match (evaluate(runtime, object), mapping.from, mapping.to) {
+        ResolvedStatement::AddMapping { span, object, mapping } => {
+            match (evaluate(runtime, object)?, mapping.from, mapping.to) {
                 (Value::Single(PrimitiveValue::ObjectId(_, id)), Symbol::Azimuth(from), Symbol::Azimuth(to))
                     => runtime.remap_slot(id, to.id, from.id),
-                (object, from, to) => panic!("Invalid mapping: {:?}, {:?} -> {:?}", object, from, to),
+                (object, from, to) => return Err(RuntimeError::Error{span, message:format!("Invalid mapping: {:?}, {:?} -> {:?}", object, from, to)}),
             }
+            Ok(ExecFlow::Normal(span))
         },
 
-        ResolvedStatement::AttachWithRemap { object, shape, mappings } => {
-            match (evaluate(runtime, object), evaluate_shape(runtime, shape)) {
+        ResolvedStatement::AttachWithRemap { span, object, shape, mappings } => {
+            match (evaluate(runtime, object)?, evaluate_shape(runtime, shape)) {
                 (Value::Single(PrimitiveValue::ObjectId(_, object_id)), ValueKind::Shape(shape_inst)) => {
                     
                     let mut remap = Vec::new();
@@ -207,54 +265,88 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) {
                     runtime.attach_shape_with_remap(object_id, shape_inst, remap);
 
                 },
-                (object, shape) => panic!("Could not attach {:?} to {:?}", shape, object)
+                (object, shape) => return Err(RuntimeError::Error{span, message:format!("Could not attach {:?} to {:?}", shape, object)})
             }
+            Ok(ExecFlow::Normal(span))
         },
         
-        ResolvedStatement::Assign { target, value } => {
-            let new_val = evaluate(runtime, *value);
+        ResolvedStatement::Assign { span, target, value } => {
+            let new_val = evaluate(runtime, value)?;
 
-            match evaluate_mut(runtime, *target) {
+            match evaluate_mut(runtime, target)? {
                 Some(target_val) => {
                     *target_val = new_val;
                 }
-                other => panic!("Could not assign {:?} to {:?}", new_val, other),
+                other => return Err(RuntimeError::Error{span, message:format!("Could not assign {:?} to {:?}", new_val, other)}),
             }
+            Ok(ExecFlow::Normal(span))
         }
 
-        ResolvedStatement::If { condition, true_statement, else_statement } => {
-            let cond = evaluate(runtime, condition);
+        ResolvedStatement::If { span, condition, true_statement, else_statement } => {
+            let cond = evaluate(runtime, condition)?;
 
             match cond {
                 Value::Single(PrimitiveValue::Bool(true)) => execute_statement(runtime, *true_statement),
                 Value::Single(PrimitiveValue::Bool(false)) => {
                     if let Some(statement) = *else_statement {
-                        execute_statement(runtime, statement)
+                        return execute_statement(runtime, statement)
                     }
+                    Ok(ExecFlow::Normal(span))
                 }
-                other => panic!("If condition was not true or false: {:?}", other),
+                other => return Err(RuntimeError::Error{span, message:format!("If condition was not true or false: {:?}", other)}),
             }
         }
 
-        ResolvedStatement::While { condition, statement } => {
+        ResolvedStatement::While { span, condition, statement } => {
             let mut flag = true;
             while flag {
-                flag = match evaluate(runtime, condition.clone()) {
+                flag = match evaluate(runtime, condition.clone())? {
                     Value::Single(PrimitiveValue::Bool(true)) => true,
                     Value::Single(PrimitiveValue::Bool(false)) => false,
-                    other => panic!("While condition was not true or false: {:?}", other),
+                    other => return Err(RuntimeError::Error{span, message:format!("While condition was not true or false: {:?}", other)}),
                 };
 
-                if flag { execute_statement(runtime, *statement.clone());}
+                if flag { 
+                    match execute_statement(runtime, *statement.clone())? {
+                        ExecFlow::Normal(span) => {},
+                        ExecFlow::Break(span) => break,
+                        ExecFlow::Continue(span) => continue,
+                        ExecFlow::Return(span, value) => return Ok(ExecFlow::Return(span, value)),
+                        ExecFlow::Error{span, message} => return Ok(ExecFlow::Error{span, message})
+                    }
+                }
             }
+            Ok(ExecFlow::Normal(span))
         }
+
+        ResolvedStatement::For{ } => todo!(),
 
         ResolvedStatement::Block(statements) => {
+            let mut last_span = Span{line: 0, column: 0};
             for statement in statements{
-                execute_statement(runtime, statement);
+                match execute_statement(runtime, statement)? {
+                    ExecFlow::Normal(span) => last_span = span,
+                    flow => return Ok(flow),
+                }
+            }
+            Ok(ExecFlow::Normal(last_span))
+        }
+
+        ResolvedStatement::Break { span } => Ok(ExecFlow::Break(span)),
+        ResolvedStatement::Continue { span } => Ok(ExecFlow::Continue(span)),
+        ResolvedStatement::Return { span, value } => Ok(ExecFlow::Return(span, evaluate(runtime, value)?)),
+        ResolvedStatement::Throw { span, message } => {
+            match evaluate(runtime, message)? {
+                Value::Single(PrimitiveValue::String(message)) => Ok(ExecFlow::Error{span, message}),
+                other => Err(RuntimeError::TypeMismatch{span, found: other, expected: ValueKind::String})
             }
         }
 
-        other => panic!("Invalid statement: {:?}", other)
+        // Adorable ignores
+        //ResolvedStatement::Break => {}
+        //ResolvedStatement::Continue => {}
+        //ResolvedStatement::Return(_) => {}
+
+        other => return Err(RuntimeError::Error{span: Span{line:0,column:0}, message:format!("Invalid statement: {:?}", other)})
     }
 }

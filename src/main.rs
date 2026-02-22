@@ -99,6 +99,25 @@ impl PrimitiveValue {
     }
 }
 
+impl std::fmt::Display for PrimitiveValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PrimitiveValue::Int32(val) =>
+                write!(f, "{}", val),
+            PrimitiveValue::Bool(val) =>
+                write!(f, "{}", val),
+            PrimitiveValue::String(val) =>
+                write!(f, "{}", val),
+            PrimitiveValue::Object(id, shape) =>
+                write!(f, "Obj{}: {:?}", id, shape),
+            PrimitiveValue::Pointer(id, az, shape) =>
+                write!(f, "Obj{}.{}: {:?}", id, az, shape),
+            val => 
+                write!(f, "{:?}", val),
+        }
+    }
+}
+
 // Native Function
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct Function {
@@ -145,8 +164,31 @@ pub struct Mapping {
 #[derive(Default, Debug, Clone, Hash, PartialEq, Eq)]
 pub enum Value {
     Single(PrimitiveValue),
-    Array(Vec<Box<Value>>),
+    Array(Vec<Box<Value>>, ValueKind),
     #[default] Empty,
+}
+
+impl Value {
+    fn kind(&self) -> ValueKind {
+        match self {
+            Value::Single(k) => k.kind(),
+            Value::Array(_, value_type) => ValueKind::Array(Box::new(value_type.clone())),
+            Value::Empty => ValueKind::None,
+        }
+    }
+}
+
+impl std::fmt::Display for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Value::Single(val) =>
+                write!(f, "{}", val),
+            Value::Array(val, _) =>
+                write!(f, "{:?}", val),
+            Value::Empty =>
+                write!(f, "Empty"),
+        }
+    }
 }
 
 impl From<bool> for Value {
@@ -285,12 +327,8 @@ impl Object {
         for (azimuth_state, slot_state_id) in self.slot_mapping.clone() {
             if azimuth_state.azimuth == azimuth {
 
-                match value.clone() {
-                    Value::Single(k) if !k.kind().is_assignable_from(azimuth_state.value_type.clone()) => {
-                        panic!("Type mismatch: {:?} not assignable from {:?}", k, azimuth_state.value_type); 
-                    },
-                    Value::Array(values) => {},
-                    _ => {},
+                if !value.kind().is_assignable_from(azimuth_state.value_type.clone()) {
+                    panic!("Type mismatch: {:?} not assignable from {:?}", value.kind(), azimuth_state.value_type);
                 }
 
                 // Slot found
@@ -667,7 +705,7 @@ impl Runtime {
     }
 
     fn get_slot_value_array_element(&self, object_id: ObjectId, slot: AzimuthId, index: usize) -> Option<&Value> {
-        if let Some(Value::Array(arr)) = self.get_slot_value(object_id, slot) {
+        if let Some(Value::Array(arr, _)) = self.get_slot_value(object_id, slot) {
             return arr.get(index).map(|boxed| boxed.as_ref());
         }
         None
@@ -683,11 +721,11 @@ impl Runtime {
         self.set_slot_value(object_id, slot, Value::Single(value));
     }
 
-    fn set_slot_value_array(&mut self, object_id: ObjectId, slot: AzimuthId, values: Vec<Value>) {
-        self.set_slot_value(object_id, slot, Value::Array(values.into_iter().map(Box::new).collect()));
+    fn set_slot_value_array(&mut self, object_id: ObjectId, slot: AzimuthId, values: Vec<Value>, kind: ValueKind) {
+        self.set_slot_value(object_id, slot, Value::Array(values.into_iter().map(Box::new).collect(), kind));
     }
     fn set_slot_value_array_element(&mut self, object_id: ObjectId, slot: AzimuthId, index: usize, value: Value) {
-        if let Some(Value::Array(arr)) = self.get_slot_value_mut(object_id, slot) {
+        if let Some(Value::Array(arr, _)) = self.get_slot_value_mut(object_id, slot) {
             if index < arr.len() {
                 arr[index] = Box::new(value);
             } else {
@@ -706,7 +744,7 @@ impl Runtime {
             if let Some(state) = object.get_slot_state(state_id) {
                 
                 print!("Local slot {}: ", state_id);
-                println!("{:?}", &state.storage);
+                println!("{}", &state.storage);
 
                 let mapped_slots: Vec<String> = object.slot_mapping.iter()
                     .filter(|(_, id)| *id == state_id)

@@ -9,12 +9,28 @@ shape Box {
     Area(self) -> int32 {
         return self.Width * self.Height
     }
+
+    Bibble(self, int32 multiplier) -> int32 {
+        return self.Width * multiplier
+    }
+
+    Bleedle(int32 a, int32 b) -> int32 {
+        return a + b
+    }
+
+    Cardboard(int32 a, int32 b, int32 c, int32 d) -> int32 {
+        return a + b + c + d
+    }
     
     InteriorShape Object
 }
 
 shape Named {
     Name string
+}
+
+shape Arrayed {
+    List int32[]
 }
 
 shape Counts {
@@ -116,5 +132,15 @@ print 6 ..< 8
 secondThing.Width = 2
 secondThing.Height = 5
 print secondThing.Area()
+
+secondThing.Width = 3
+print secondThing.Bibble(5)
+print Box.Bleedle(5, 5)
+print Box.Cardboard(5, 5, 5, 5)
+
+let thirdThing
+thirdThing := Arrayed
+thirdThing.List = 0 ... 10
+print thirdThing
 
 print "Program successfully executed!"

@@ -116,6 +116,7 @@ pub struct Scope {
     pub id: ScopeId,
     pub parent: Option<ScopeId>,
     pub symbols: HashMap<Identifier, Symbol>,
+    pub locals: u32,
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -161,6 +162,7 @@ pub enum ResolvedShapeExpression {
     Simple(Symbol),
     Parameter(Identifier), // T
     Primitive(ValueKind),
+    Array(Box<ResolvedShapeExpression>),
     Applied {
         base: Symbol,
         args: Vec<ResolvedShapeExpression>,
@@ -177,7 +179,8 @@ impl ResolvedShapeExpression {
                 generics: args.iter().map(|expr| expr.kind()).collect()
             }),
             ResolvedShapeExpression::Primitive(kind) => kind.clone(),
-            other => ValueKind::None
+            ResolvedShapeExpression::Array(expr) => ValueKind::Array(Box::new(expr.kind())),
+            other => todo!()
         }
     }
 }
@@ -185,7 +188,7 @@ impl ResolvedShapeExpression {
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum ResolvedExpression {
     Value(Span, Value),
-    Array(Span, Vec<ResolvedExpression>),
+    Array(Span, Vec<ResolvedExpression>, ValueKind),
     Variable(Span, Symbol),
     UnaryOp {
         span: Span,
@@ -202,6 +205,11 @@ pub enum ResolvedExpression {
         span: Span,
         target: Box<ResolvedExpression>,
         member: Symbol,
+    },
+    ArrayAccess  {
+        span: Span,
+        target: Box<ResolvedExpression>,
+        index: Box<ResolvedExpression>,
     },
     FunctionCall  {
         span: Span,
@@ -220,10 +228,8 @@ pub enum ResolvedExpression {
 impl ResolvedExpression {
     pub fn kind(&self) -> ValueKind {
         match self {
-            ResolvedExpression::Value(_, Value::Single(value)) => value.kind(),
-            ResolvedExpression::Value(_, Value::Array(values)) => todo!(),
-            ResolvedExpression::Value(_, Value::Empty) => ValueKind::None,
-            ResolvedExpression::Array(_, resolved_expressions) => todo!(),
+            ResolvedExpression::Value(_, value) => value.kind(),
+            ResolvedExpression::Array(_, _, value_type) => ValueKind::Array(Box::new(value_type.clone())),
             ResolvedExpression::Variable(_, symbol) => symbol.kind(),
             ResolvedExpression::UnaryOp {span:_,  operator, operand:_ } => operator.kind(),
             ResolvedExpression::BinaryOp {span:_, left:_, operator, right:_ } => operator.kind(),
@@ -261,7 +267,7 @@ struct Analyzer{
 
 impl Analyzer {
     pub fn new() -> Self {
-        let global = Scope{id: 0, parent: None, symbols: HashMap::new()};
+        let global = Scope{id: 0, parent: None, symbols: HashMap::new(), locals:0};
         let mut analyzer = Analyzer{
             scopes: Vec::new(), 
             next_scope_id: 1,
@@ -283,7 +289,7 @@ impl Analyzer {
 
     pub fn create_scope(&mut self, parent:ScopeId) -> ScopeId {
         let id = self.next_scope_id;
-        let scope = Scope{id: id.clone(), parent: Some(parent), symbols: HashMap::new()};
+        let scope = Scope{id: id.clone(), parent: Some(parent), symbols: HashMap::new(), locals:0};
 
         self.next_scope_id += 1;
         self.scopes.push(scope);
@@ -445,11 +451,13 @@ impl Analyzer {
     fn declare_local(&mut self, scope: ScopeId, name: Identifier, shape: ResolvedShapeExpression) -> &Symbol {
         let mut known_shapes = Vec::new();
         known_shapes.push(shape.kind());
-
-        let id = 0;
-        let symbol = Symbol::Local(LocalInfo{id: id, name: name.clone(), known_shapes});
         
         let scope = self.get_scope_mut(scope);
+
+        let id = scope.locals;
+        scope.locals += 1;
+        let symbol = Symbol::Local(LocalInfo{id: id, name: name.clone(), known_shapes});
+
         scope.symbols.insert(name.clone(), symbol);
         scope.symbols.get(&name).unwrap()
     }
@@ -457,12 +465,21 @@ impl Analyzer {
     pub fn resolve_expression(&mut self, expression:Expression, scope:ScopeId) -> Result<ResolvedExpression, CompileError> {
         match expression {
             Expression::Value(span, value) => Ok(ResolvedExpression::Value(span, value)),
-            Expression::Array(span, expressions) => {
+            Expression::Array(span, expressions, kind) => {
                 let mut values = Vec::new();
                 for item in expressions {
                     values.push(self.resolve_expression(item, scope.clone())?);
                 }
-                Ok(ResolvedExpression::Array(span, values))
+
+                let kind = match kind {
+                    Some(k) => k,
+                    None => match values.first() {
+                        Some(val) => val.kind(),
+                        None => ValueKind::None,
+                    }
+                };
+
+                Ok(ResolvedExpression::Array(span, values, kind))
             },
             
             Expression::Variable(span, k) => {
@@ -555,6 +572,17 @@ impl Analyzer {
                 }
             }
 
+            Expression::ArrayAccess{ span, target, index} => {
+                let target = self.resolve_expression(*target, scope)?;
+                let index = self.resolve_expression(*index, scope)?;
+
+                if !index.kind().is_assignable_from(ValueKind::Int32) {
+                    return Err(CompileError::TypeMismatch { span, expected: ValueKind::Int32, found: index.kind() });
+                }
+
+                Ok(ResolvedExpression::ArrayAccess{span, target:Box::new(target), index:Box::new(index)})
+            }
+
             Expression::FunctionCall { span, caller, target, args } => {
                 let target = self.resolve_expression(*target, scope)?;
                 let caller = self.resolve_expression(*caller, scope)?;
@@ -574,7 +602,7 @@ impl Analyzer {
                 for index in 0..args.len() {
                     let arg = self.resolve_expression(args.get(index).unwrap().clone(), scope)?;
 
-                    match func.input_types.get(index) {
+                    match func.input_types.get(if func.has_self { index + 1 } else { index }) {
                         Some(param) => {
                             // Type check
                             if !arg.kind().is_assignable_from(param.clone()) {
@@ -622,7 +650,7 @@ impl Analyzer {
                 self.get_shape(scope, k.clone()).expect(format!("Shape not found in scope: {:?}", k).as_str()).clone()
             )),
             ShapeExpression::Primitive(kind) => Ok(ResolvedShapeExpression::Primitive(kind)),
-
+            ShapeExpression::Array(expr) => Ok(ResolvedShapeExpression::Array(Box::new(self.resolve_shape_expression(*expr, scope)?))),
             ShapeExpression::Applied { base, args } => {
                 let base = self.get_shape(scope, base.clone())
                     .expect(format!("Shape not found in scope: {:?}", base).as_str()).clone();

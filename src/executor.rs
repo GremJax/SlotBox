@@ -48,12 +48,12 @@ pub fn evaluate_shape(runtime: &Runtime, shape:ResolvedShapeExpression) -> Value
 pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<Value, RuntimeError> {
     match expression {
         ResolvedExpression::Value(_, value) => Ok(value),
-        ResolvedExpression::Array(_, expressions) => {
+        ResolvedExpression::Array(_, expressions, kind) => {
             let mut values = Vec::new();
             for item in expressions {
                 values.push(Box::new(evaluate(runtime, item)?));
             }
-            Ok(Value::Array(values))
+            Ok(Value::Array(values, kind))
         },
         ResolvedExpression::Variable(_, Symbol::Object(k)) => Ok(Value::Single(PrimitiveValue::Object(k.id, ValueKind::Shape(OBJECT_INSTANCE)))),
         ResolvedExpression::Variable(_, Symbol::Local(k)) => Ok(runtime.get_local(k.id).clone()),
@@ -145,6 +145,21 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
             }
         },
         
+        ResolvedExpression::ArrayAccess{ span, target, index} => {
+            let target = evaluate(runtime, *target)?;
+            let index = evaluate(runtime, *index)?;
+
+            match (target, index) {
+                (Value::Array(array, _), Value::Single(PrimitiveValue::Int32(index))) => {
+                    match array.get(index as usize) {
+                        Some(value) => Ok(*value.clone()),
+                        None => return Err(RuntimeError::Error{span, message:format!("Index {:?} out of bounds", index)}),
+                    }
+                }
+                (other, member) => Err(RuntimeError::Error{span, message:format!("Array access not permitted for {:?}.{:?}", other, member)}),
+            }
+        },
+        
         ResolvedExpression::FunctionCall{ span, target, args} => {
             let mut params = Vec::new();
             for arg in args {
@@ -222,7 +237,7 @@ pub fn create_range(from: i32, to: i32) -> Value {
     for i in from..=to {
         range.push(Box::new(i.into()));
     }
-    Value::Array(range)
+    Value::Array(range, ValueKind::Int32)
 }
 
 pub fn execute(runtime: &mut Runtime, ast: Vec<ResolvedStatement>) -> Result<ExecFlow, RuntimeError> {
@@ -267,7 +282,7 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
                 Value::Single(PrimitiveValue::String(k)) => println!("{}", k),
                 Value::Single(PrimitiveValue::Object(object_id, _)) => runtime.print_object(object_id),
                 Value::Single(k) => println!("{:?}", k),
-                Value::Array(k) => println!("{:?}", k),
+                Value::Array(k, _) => println!("{:?}", k),
                 other => { return Err(RuntimeError::TypeMismatch{span, found: other, expected: ValueKind::String}); }
             }
             Ok(ExecFlow::Normal(span))

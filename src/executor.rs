@@ -21,7 +21,7 @@ impl std::fmt::Display for RuntimeError {
             RuntimeError::Error { span, message } =>
                 write!(f, "{}: {}", span, message),
             RuntimeError::Throw { span, message } =>
-                write!(f, "{}: {}", span, message),
+                write!(f, "{}: Throw: \"{}\"", span, message),
             RuntimeError::TypeMismatch { span, found, expected } =>
                 write!(f, "{}: {:?} does not match expected type {:?}", span, found, expected),
             RuntimeError::UnexpectedBreakout { span } =>
@@ -44,7 +44,7 @@ pub fn evaluate_shape(runtime: &Runtime, shape:ResolvedShapeExpression) -> Value
     shape.kind()
 }
 
-pub fn evaluate(runtime: &Runtime, expression:ResolvedExpression) -> Result<Value, RuntimeError> {
+pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<Value, RuntimeError> {
     match expression {
         ResolvedExpression::Value(_, value) => Ok(value),
         ResolvedExpression::Array(_, expressions) => {
@@ -54,7 +54,7 @@ pub fn evaluate(runtime: &Runtime, expression:ResolvedExpression) -> Result<Valu
             }
             Ok(Value::Array(values))
         },
-        ResolvedExpression::Variable(_, Symbol::Object(k)) => Ok(Value::Single(PrimitiveValue::ObjectId(OBJECT_INSTANCE, k.id))),
+        ResolvedExpression::Variable(_, Symbol::Object(k)) => Ok(Value::Single(PrimitiveValue::Object(k.id, ValueKind::Shape(OBJECT_INSTANCE)))),
 
         ResolvedExpression::UnaryOp { span, operator, operand } => {
             match (operator, evaluate(runtime, *operand)?) {
@@ -132,28 +132,57 @@ pub fn evaluate(runtime: &Runtime, expression:ResolvedExpression) -> Result<Valu
         
         ResolvedExpression::MemberAccess{ span, target, member} => {
             match (evaluate(runtime, *target)?, member) {
-                (Value::Single(PrimitiveValue::ObjectId(_, id)), Symbol::Azimuth(azimuth)) => {
-                    Ok(runtime.get_slot_value(id, azimuth.id).unwrap_or(&Value::Empty).clone())
+                (Value::Single(PrimitiveValue::Object(object_id, _)), Symbol::Azimuth(azimuth)) => {
+                    Ok(runtime.get_slot_value(object_id, azimuth.id).unwrap_or(&Value::Empty).clone())
                 }
                 (other, member) => Err(RuntimeError::Error{span, message:format!("Member access not permitted for {:?}.{:?}", other, member)}),
             }
-        }
+        },
+        
+        ResolvedExpression::FunctionCall{ span, target, args} => {
+            let mut params = Vec::new();
+            for arg in args {
+                params.push(evaluate(runtime, arg)?);
+            }
+
+            let target = evaluate(runtime, *target)?;
+
+            let func = match target {
+                Value::Single(PrimitiveValue::Function(func)) => func,
+                other => return Err(RuntimeError::Error{span, message:format!("{:?} is not a function", other)}),
+            };
+
+            let statement = &func.func;
+            let expected_return = func.output_type.clone();
+
+            match execute_statement(runtime, statement.clone())? {
+                ExecFlow::Error { span, message } => Err(RuntimeError::Throw { span, message }),
+                ExecFlow::Return(span, Value::Single(value)) => {
+                    if value.kind() != expected_return {
+                        return Err(RuntimeError::TypeMismatch { span, found: Value::Single(value), expected: expected_return });
+                    }
+
+                    Ok(Value::Single(value))
+                },
+                _ => Err(RuntimeError::Error { span, message:format!("No value returned, expected {:?}", expected_return) }),
+            }
+        },
 
         other => panic!("Invalid expression: {:?}", other)
     }
 }
 
-pub fn evaluate_mut(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<Option<&mut Value>, RuntimeError> {
+pub fn evaluate_place(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<Value, RuntimeError> {
     match expression {
         ResolvedExpression::MemberAccess{ span, target, member} => {
             match (evaluate(runtime, *target)?, member) {
-                (Value::Single(PrimitiveValue::ObjectId(_, id)), Symbol::Azimuth(azimuth)) => {
-                    Ok(runtime.get_slot_value_mut(id, azimuth.id))
+                (Value::Single(PrimitiveValue::Object(object_id, kind)), Symbol::Azimuth(azimuth)) => {
+                    Ok(Value::Single(PrimitiveValue::Pointer(object_id, azimuth.id, kind)))
                 }
                 (other, member) => Err(RuntimeError::Error{span, message:format!("Member access not permitted for {:?}.{:?}", other, member)}),
             }
-        }
-        other => panic!("Invalid mutable expression: {:?}", other)
+        },
+        other => evaluate(runtime, other), 
     }
 }
 
@@ -205,7 +234,7 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
         ResolvedStatement::Print { span, expr } => {
             match evaluate(runtime, expr)? {
                 Value::Single(PrimitiveValue::String(k)) => println!("{}", k),
-                Value::Single(PrimitiveValue::ObjectId(_, id)) => runtime.print_object(id),
+                Value::Single(PrimitiveValue::Object(object_id, _)) => runtime.print_object(object_id),
                 Value::Single(k) => println!("{:?}", k),
                 Value::Array(k) => println!("{:?}", k),
                 other => { return Err(RuntimeError::TypeMismatch{span, found: other, expected: ValueKind::String}); }
@@ -225,7 +254,8 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
 
         ResolvedStatement::Attach { span, object, shape} => {
             match (evaluate(runtime, object)?, evaluate_shape(runtime, shape)) {
-                (Value::Single(PrimitiveValue::ObjectId(_, object_id)), ValueKind::Shape(shape_inst)) => runtime.attach_shape(object_id, shape_inst),
+                (Value::Single(PrimitiveValue::Object(object_id, _)), ValueKind::Shape(shape_inst)) => 
+                    runtime.attach_shape(object_id, shape_inst),
                 (object, shape) => return Err(RuntimeError::Error{span, message:format!("Could not attach {:?} to {:?}", shape, object)})
             }
             Ok(ExecFlow::Normal(span))
@@ -233,7 +263,7 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
 
         ResolvedStatement::Detach { span, object, shape } => {
             match (evaluate(runtime, object)?, evaluate_shape(runtime, shape)) {
-                (Value::Single(PrimitiveValue::ObjectId(_, object_id)), ValueKind::Shape(shape_inst)) => runtime.detach_shape(object_id, shape_inst),
+                (Value::Single(PrimitiveValue::Object(object_id, _)), ValueKind::Shape(shape_inst)) => runtime.detach_shape(object_id, shape_inst),
                 (object, shape) => return Err(RuntimeError::Error{span, message:format!("Could not detach {:?} from {:?}", shape, object)})
             }
             Ok(ExecFlow::Normal(span))
@@ -241,8 +271,8 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
 
         ResolvedStatement::AddMapping { span, object, mapping } => {
             match (evaluate(runtime, object)?, mapping.from, mapping.to) {
-                (Value::Single(PrimitiveValue::ObjectId(_, id)), Symbol::Azimuth(from), Symbol::Azimuth(to))
-                    => runtime.remap_slot(id, to.id, from.id),
+                (Value::Single(PrimitiveValue::Object(object_id, _)), Symbol::Azimuth(from), Symbol::Azimuth(to))
+                    => runtime.remap_slot(object_id, to.id, from.id),
                 (object, from, to) => return Err(RuntimeError::Error{span, message:format!("Invalid mapping: {:?}, {:?} -> {:?}", object, from, to)}),
             }
             Ok(ExecFlow::Normal(span))
@@ -250,7 +280,7 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
 
         ResolvedStatement::AttachWithRemap { span, object, shape, mappings } => {
             match (evaluate(runtime, object)?, evaluate_shape(runtime, shape)) {
-                (Value::Single(PrimitiveValue::ObjectId(_, object_id)), ValueKind::Shape(shape_inst)) => {
+                (Value::Single(PrimitiveValue::Object(object_id, _)), ValueKind::Shape(shape_inst)) => {
                     
                     let mut remap = Vec::new();
                     for mapping in mappings {
@@ -271,13 +301,15 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
         },
         
         ResolvedStatement::Assign { span, target, value } => {
-            let new_val = evaluate(runtime, value)?;
+            let val = evaluate(runtime, value)?;
 
-            match evaluate_mut(runtime, target)? {
-                Some(target_val) => {
-                    *target_val = new_val;
+            match evaluate_place(runtime, target)? {
+                Value::Single(PrimitiveValue::Pointer(object_id, az, kind)) => {
+                    
+                    runtime.set_slot_value(object_id, az, val);
+
                 }
-                other => return Err(RuntimeError::Error{span, message:format!("Could not assign {:?} to {:?}", new_val, other)}),
+                other => return Err(RuntimeError::Error{span, message:format!("Could not assign {:?} to {:?}", val, other)}),
             }
             Ok(ExecFlow::Normal(span))
         }
@@ -308,9 +340,9 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
 
                 if flag { 
                     match execute_statement(runtime, *statement.clone())? {
-                        ExecFlow::Normal(span) => {},
-                        ExecFlow::Break(span) => break,
-                        ExecFlow::Continue(span) => continue,
+                        ExecFlow::Normal(_) => {},
+                        ExecFlow::Break(_) => break,
+                        ExecFlow::Continue(_) => continue,
                         ExecFlow::Return(span, value) => return Ok(ExecFlow::Return(span, value)),
                         ExecFlow::Error{span, message} => return Ok(ExecFlow::Error{span, message})
                     }

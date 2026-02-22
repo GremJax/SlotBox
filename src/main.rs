@@ -1,8 +1,8 @@
 use std::{collections::{HashMap, HashSet}, fs};
 
 use crate::{
-    analyzer::{AzimuthInfo, ObjectInfo, ShapeInfo, Symbol}, 
-    executor::{RuntimeError, ShapeInstance}
+    analyzer::{AzimuthInfo, ObjectInfo, ResolvedShapeExpression, ResolvedStatement, ShapeInfo, Symbol}, 
+    executor::{RuntimeError, ShapeInstance}, parser::ShapeExpression
 };
 
 pub mod parser;
@@ -22,8 +22,9 @@ pub enum ValueKind {
     Array(Box<ValueKind>),
     Azimuth(Box<ValueKind>),
     Option(Box<ValueKind>),
-    Pointer(ObjectId, Box<Azimuth>),
-    Function,
+    Object(ObjectId, Box<ValueKind>),
+    Pointer(ObjectId, AzimuthId, Box<ValueKind>),
+    Function(Box<FunctionInfo>),
     Generic(GenericId),
     #[default] None
 }
@@ -46,12 +47,10 @@ impl ValueKind {
                 ValueKind::Azimuth(other_k) => k.is_assignable_from(*other_k),
                 _ => false,
             },
-            ValueKind::Pointer(_, k) => match other {
-                ValueKind::Pointer(_, other_k) => k.value_type.is_assignable_from(other_k.value_type),
-                _ => false,
-            } 
             ValueKind::Option(k) => k.is_assignable_from(other),
-            ValueKind::Function => other == ValueKind::Function,
+            ValueKind::Object(_, k) => k.is_assignable_from(other),
+            ValueKind::Pointer(_, _, k) => k.is_assignable_from(other),
+            ValueKind::Function(info) => other == ValueKind::Function(info.clone()),
             ValueKind::Generic(_) => true,
             ValueKind::None => other == ValueKind::None,
         }
@@ -61,17 +60,17 @@ impl ValueKind {
 
 type GenericId = u8;
 
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Debug, Clone, Hash, PartialEq, Eq)]
 pub enum PrimitiveValue {
     Int32(i32),
-    Float32(f32),
     uInt32(u32),
     Bool(bool),
     String(String),
-    ObjectId(ShapeInstance, ObjectId),
+    //ObjectId(ShapeInstance, ObjectId),
     Azimuth(AzimuthState),
-    Pointer(ObjectId, Azimuth),
-    Function(Function),
+    Object(ObjectId, ValueKind),
+    Pointer(ObjectId, AzimuthId, ValueKind),
+    Function(Box<Function>),
     #[default] None,
 }
 
@@ -81,34 +80,41 @@ impl PrimitiveValue {
     fn kind(&self) -> ValueKind {
         match self {
             PrimitiveValue::Int32(_) => ValueKind::Int32,
-            PrimitiveValue::Float32(_) => ValueKind::Float32,
             PrimitiveValue::uInt32(_) => ValueKind::uInt32,
             PrimitiveValue::Bool(_) => ValueKind::Bool,
             PrimitiveValue::String(_) => ValueKind::String,
-            PrimitiveValue::ObjectId(shape_id, _) => ValueKind::Shape(shape_id.clone()),
+            //PrimitiveValue::ObjectId(shape_id, _) => ValueKind::Shape(shape_id.clone()),
             PrimitiveValue::Azimuth(s) => ValueKind::Azimuth(Box::new(s.value_type.clone())),
-            PrimitiveValue::Pointer(object_id, slot) => ValueKind::Pointer(*object_id, Box::new(slot.clone())),
-            PrimitiveValue::Function(_) => ValueKind::Function,
+            PrimitiveValue::Object(_, kind) => kind.clone(),
+            PrimitiveValue::Pointer(_, _, kind) => kind.clone(),
+            PrimitiveValue::Function(func) => 
+                ValueKind::Function(Box::new(FunctionInfo{
+                    has_self:func.has_self,
+                    id:func.id, 
+                    output_type:func.output_type.clone(),
+                    input_types:func.input_types.clone()
+                })),
             PrimitiveValue::None => ValueKind::None,
         }
     }
 }
 
 // Native Function
-#[derive(Debug, Clone)]
-struct FunctionParams {
-    caller: ObjectId,
-    inputs: Vec<Value>,
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct Function {
+    pub id: AzimuthId,
+    pub has_self:bool,
+    pub input_types: Vec<ValueKind>,
+    pub output_type: ValueKind,
+    pub func: ResolvedStatement,
 }
 
-type NativeFn = fn(FunctionParams) -> Value;
-
-#[derive(Debug, Clone)]
-pub struct Function {
-    self_type: ShapeId,
-    input_types: Vec<ValueKind>,
-    output_type: ValueKind,
-    func: NativeFn,
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct FunctionInfo {
+    pub id: AzimuthId,
+    pub input_types: Vec<ValueKind>,
+    pub output_type: ValueKind,
+    pub has_self: bool,
 }
 
 // Slot Id
@@ -136,7 +142,7 @@ pub struct Mapping {
 }
 
 // Runtime Slot state
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Debug, Clone, Hash, PartialEq, Eq)]
 pub enum Value {
     Single(PrimitiveValue),
     Array(Vec<Box<Value>>),
@@ -694,14 +700,10 @@ impl Runtime {
 
 }
 
-fn print_hello(params: FunctionParams) -> Value {
-    println!("Hello from native function! Caller: {}", params.caller);
-    Value::Single(PrimitiveValue::None)
-}
-
-fn read_source(path: &str) -> Result<String, std::io::Error> {
-    fs::read_to_string(path)
-}
+//fn print_hello(params: FunctionParams) -> Value {
+//    println!("Hello from native function! Caller: {}", params.caller);
+//    Value::Single(PrimitiveValue::None)
+//}
 
 fn main() {
 
@@ -723,5 +725,8 @@ fn main() {
     };
 
     let mut runtime = Runtime::new();
-    executor::execute(&mut runtime, resolved_ast);
+    let result = match executor::execute(&mut runtime, resolved_ast){
+        Ok(result) => result,
+        Err(error) => panic!("Runtime error in main.az:\n{}", error),
+    };
 }

@@ -1,7 +1,7 @@
 use std::{collections::HashMap, fs};
 
-use crate::{AzimuthId, ObjectId, PrimitiveValue, ShapeId, Value, ValueKind, analyzer, executor::{self, ShapeInstance}, parser::{self, Mapping}, tokenizer::{self, Span}}; 
-use parser::{Azimuth, Expression, Statement, ShapeExpression};
+use crate::{AzimuthId, FunctionInfo, ObjectId, PrimitiveValue, ShapeId, Value, ValueKind, analyzer, executor::{self, OBJECT_INSTANCE, ShapeInstance}, parser::{self, Mapping}, tokenizer::{self, Span}}; 
+use parser::{RawAzimuth, Expression, Statement, ShapeExpression};
 use tokenizer::{Operator};
 
 #[derive(Debug, Clone)]
@@ -57,7 +57,7 @@ impl std::fmt::Display for CompileError {
 type LocalId = u32;
 type Identifier = String;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct ShapeInfo {
     pub id: ShapeId,
     pub name: Identifier,
@@ -66,7 +66,7 @@ pub struct ShapeInfo {
     pub generics: Vec<ResolvedShapeExpression>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct AzimuthInfo {
     pub id: AzimuthId,
     pub name: Identifier,
@@ -76,13 +76,14 @@ pub struct AzimuthInfo {
     pub value_type: ValueKind,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct ObjectInfo {
     pub id: ObjectId,
     pub name: Identifier,
+    pub known_shapes: Vec<ResolvedShapeExpression>
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum Symbol {
     Shape(ShapeInfo),
     Object(ObjectInfo),
@@ -110,13 +111,13 @@ pub struct Scope {
     pub symbols: HashMap<Identifier, Symbol>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct ResolvedMapping {
     pub from: Symbol,
     pub to: Symbol,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum ResolvedStatement {
     Using { span: Span, ast: Vec<ResolvedStatement>, },
     DeclareShape { span: Span, symbol: Symbol },
@@ -148,7 +149,7 @@ pub enum ResolvedStatement {
     Throw{span: Span, message: ResolvedExpression },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum ResolvedShapeExpression {
     Simple(Symbol),
     Parameter(Identifier), // T
@@ -174,7 +175,7 @@ impl ResolvedShapeExpression {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum ResolvedExpression {
     Value(Span, Value),
     Array(Span, Vec<ResolvedExpression>),
@@ -194,6 +195,17 @@ pub enum ResolvedExpression {
         span: Span,
         target: Box<ResolvedExpression>,
         member: Symbol,
+    },
+    FunctionCall  {
+        span: Span,
+        target: Box<ResolvedExpression>,
+        args: Vec<ResolvedExpression>,
+    },
+    Function {
+        span: Span,
+        input_types: Vec<ResolvedShapeExpression>,
+        output_type: ResolvedShapeExpression,
+        func: Box<ResolvedStatement>
     }
 }
 
@@ -299,7 +311,7 @@ impl Analyzer {
         }
     }
     
-    fn declare_shape(&mut self, span: Span, scope: ScopeId, name: Identifier, slot_ids: Vec<Azimuth>, mappings: Vec<Mapping>, generics: Vec<ShapeExpression>) -> Result<&Symbol, CompileError> {
+    fn declare_shape(&mut self, span: Span, scope: ScopeId, name: Identifier, slot_ids: Vec<RawAzimuth>, mappings: Vec<Mapping>, generics: Vec<ShapeExpression>) -> Result<&Symbol, CompileError> {
         let id = self.next_shape_id.clone();
         self.next_shape_id += 1;
 
@@ -336,7 +348,7 @@ impl Analyzer {
 
         // Static singleton
         let static_info = if has_static {
-            Some(self.declare_object(scope, format!("{}::Static", name)).clone())
+            Some(self.declare_object(scope, format!("{}::Static", name), ResolvedShapeExpression::Primitive(ValueKind::Shape(OBJECT_INSTANCE))).clone())
         } else { None };
         
         let scope = self.get_scope_mut(scope);
@@ -361,18 +373,21 @@ impl Analyzer {
         Ok(scope.symbols.get(&name).unwrap())
     }
 
-    fn declare_object(&mut self, scope: ScopeId, name: Identifier) -> &Symbol {
+    fn declare_object(&mut self, scope: ScopeId, name: Identifier, shape: ResolvedShapeExpression) -> &Symbol {
         let id = self.next_object_id.clone();
         self.next_object_id += 1;
 
-        let symbol = Symbol::Object(ObjectInfo{id: id, name: name.clone()});
+        let mut known_shapes = Vec::new();
+        known_shapes.push(shape);
+
+        let symbol = Symbol::Object(ObjectInfo{id: id, name: name.clone(), known_shapes});
         
         let scope = self.get_scope_mut(scope);
         scope.symbols.insert(name.clone(), symbol);
         scope.symbols.get(&name).unwrap()
     }
 
-    pub fn resolve_expression(&self, expression:Expression, scope:ScopeId) -> Result<ResolvedExpression, CompileError> {
+    pub fn resolve_expression(&mut self, expression:Expression, scope:ScopeId) -> Result<ResolvedExpression, CompileError> {
         match expression {
             Expression::Value(span, value) => Ok(ResolvedExpression::Value(span, value)),
             Expression::Array(span, expressions) => {
@@ -461,10 +476,72 @@ impl Analyzer {
             }
 
             Expression::MemberAccess{ span, target, member} => {
-                Ok(ResolvedExpression::MemberAccess{span, 
-                    target: Box::new(self.resolve_expression(*target, scope)?), 
-                    member: self.get_symbol(scope, member.clone()).expect(format!("Member not found: {:?}", member).as_str()).clone()
-                })
+                let target = self.resolve_expression(*target, scope)?;
+                if let Some(member) = self.get_symbol(scope, member.clone()) {
+                    Ok(ResolvedExpression::MemberAccess{span, 
+                        target:Box::new(target),
+                        member:member.clone()
+                        })
+                } else {
+                    Err(CompileError::UndefinedSymbol { span, name: member })
+                }
+            }
+
+            Expression::FunctionCall { span, target, args } => {
+                let target = self.resolve_expression(*target, scope)?;
+
+                let func = match target.kind() {
+                    ValueKind::Function(func) => *func,
+                    other => return Err(CompileError::Error { span, message:format!("Expected function, got {:?}", other) })
+                };
+
+                let mut resolved_args = Vec::new();
+
+                // Add self
+                if func.has_self {
+                    resolved_args.push(target.clone());
+                }
+
+                for index in 0..args.len() {
+                    let arg = self.resolve_expression(args.get(index).unwrap().clone(), scope)?;
+
+                    match func.input_types.get(index) {
+                        Some(param) => {
+                            // Type check
+                            if !arg.kind().is_assignable_from(param.clone()) {
+                                return Err(CompileError::TypeMismatch { span, expected: param.clone(), found: arg.kind()})
+                            }
+
+                            // Accept arg
+                            resolved_args.push(arg);
+                        }
+                        None => return Err(CompileError::Error { span, message:format!("Too few args: {}, needed: {}", args.len(), func.input_types.len()) }),
+                    }
+                }
+                if args.len() < func.input_types.len() {
+                    return Err(CompileError::Error { span, message:format!("Too few args: {}, needed: {}", args.len(), func.input_types.len()) })
+                }
+
+                Ok(ResolvedExpression::FunctionCall{span, target:Box::new(target), args:resolved_args})
+            },
+
+            Expression::Function {span, input_types, output_type, func } => {
+
+                let new_scope = self.create_scope(scope);
+
+                let mut resolved_inputs = Vec::new();
+                for input in input_types {
+
+                    let value_type = self.resolve_shape_expression(input.value_type, scope)?;
+                    self.declare_object(new_scope, input.identifier, value_type.clone());
+
+                    resolved_inputs.push(value_type);
+                }
+
+                Ok(ResolvedExpression::Function{span, 
+                    input_types:resolved_inputs, 
+                    output_type:self.resolve_shape_expression(output_type, new_scope)?, 
+                    func:Box::new(self.resolve_statement(*func, new_scope)?)})
             }
 
         }
@@ -486,6 +563,18 @@ impl Analyzer {
                     resolved.push(self.resolve_shape_expression(arg, scope)?);
                 }
                 Ok(ResolvedShapeExpression::Applied{ base, args: resolved})
+            },
+            ShapeExpression::Function { func } => {
+                let output_type = self.resolve_shape_expression(func.output_type, scope)?.kind();
+
+                let mut input_types = Vec::new();
+                for input in func.input_types {
+                    input_types.push(self.resolve_shape_expression(input.value_type, scope)?.kind())
+                }
+
+                let info = FunctionInfo{id: 0, input_types, output_type, has_self: func.has_self };
+
+                Ok(ResolvedShapeExpression::Primitive(ValueKind::Function(Box::new(info))))
             }
         }
     }
@@ -522,23 +611,31 @@ impl Analyzer {
                 let symbol = self.declare_shape(span.clone(), scope, name, slot_ids, mappings, generics)?;
                 Ok(ResolvedStatement::DeclareShape{ span, symbol:  symbol.clone() })
             }
-            Statement::DeclareObject { span, name } => {
+            Statement::DeclareObject { span, name, shape } => {
                 let my_scope = self.get_scope_mut(scope);
                 if my_scope.symbols.contains_key(&name) { return Err(CompileError::DuplicateSymbol{span, name}); }
+
+                let shape = self.resolve_shape_expression(shape, scope)?;
     
-                let symbol = self.declare_object(scope, name);
+                let symbol = self.declare_object(scope, name, shape);
                 Ok(ResolvedStatement::DeclareObject{ span, symbol: symbol.clone() })
             }
-            Statement::Attach { span, object, shape } => 
+            Statement::Attach { span, object, shape } => {
+                let shape = self.resolve_shape_expression(shape, scope)?;
+
                 Ok(ResolvedStatement::Attach{ span, 
                     object: self.resolve_expression(object, scope)?, 
-                    shape: self.resolve_shape_expression(shape, scope)?,
-                }),
-            Statement::Detach { span, object, shape } => 
+                    shape,
+                })
+            }
+            Statement::Detach { span, object, shape } => {
+                let shape = self.resolve_shape_expression(shape, scope)?;
+
                 Ok(ResolvedStatement::Detach{ span, 
                     object: self.resolve_expression(object, scope)?, 
-                    shape: self.resolve_shape_expression(shape, scope)?
-                }),
+                    shape,
+                })
+            }
             Statement::AddMapping { span, object, mapping } => 
                 Ok(ResolvedStatement::AddMapping{ span:span.clone(), 
                     object: self.resolve_expression(object, scope)?, 

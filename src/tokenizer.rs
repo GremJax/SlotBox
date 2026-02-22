@@ -47,7 +47,7 @@ impl Operator {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum Keyword {
     Using,
     Shape, Let,
@@ -58,7 +58,7 @@ pub enum Keyword {
     Print,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct Span {
     pub line: usize,
     pub column: usize,

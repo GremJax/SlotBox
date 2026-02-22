@@ -5,6 +5,10 @@ print "hello world"
 shape Box {
     Width int32
     Height int32
+
+    Area(self) -> int32 {
+        return self.Width * self.Height
+    }
     
     InteriorShape Object
 }
@@ -15,7 +19,7 @@ shape Named {
 
 shape Counts {
     MyCount int32
-    GlobalCount int32 static = 5
+    GlobalCount static int32 = 5
 }
 
 //shape TypedThing<T> {
@@ -54,7 +58,7 @@ print firstThing
 //firstThing := TypedThing<int32>
 //print firstThing
 
-//firstThing.Thing = 5
+//firstThing.Thing = 
 //print firstThing
 
 let secondThing
@@ -108,5 +112,7 @@ while secondThing.Height <= 5 {
 if secondThing.Height < 2 throw "God has abandoned us"
 
 print 6 ..< 8
+
+print secondThing.Area()
 
 print "Program successfully executed!"

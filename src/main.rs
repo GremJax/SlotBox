@@ -1,7 +1,7 @@
 use std::{collections::{HashMap, HashSet}, fs};
 
 use crate::{
-    analyzer::{AzimuthInfo, ObjectInfo, ResolvedShapeExpression, ResolvedStatement, ShapeInfo, Symbol}, 
+    analyzer::{AzimuthInfo, ObjectInfo, ResolvedShapeExpression, ResolvedStatement, ShapeInfo, Symbol, LocalId}, 
     executor::{RuntimeError, ShapeInstance}, parser::ShapeExpression
 };
 
@@ -307,6 +307,7 @@ pub struct Runtime {
     shapes: Vec<Shape>,    
     azimuths: Vec<Azimuth>,
     objects: Vec<Object>,
+    locals: Vec<Value>,
     next_object_id: ObjectId,
     next_shape_id: ShapeId,
     next_azimuth_id: AzimuthId,
@@ -329,6 +330,7 @@ impl Runtime {
             next_object_id: 1,
             next_shape_id: 0,
             next_azimuth_id: 0,
+            locals: Vec::new(),
         };
         runtime.objects.push(global);
         runtime
@@ -358,57 +360,49 @@ impl Runtime {
             _ => 0,   
         };
 
-        let mut az_ids = Vec::new();
-        for symbol in &info.azimuths {
-            match symbol {
-                Symbol::Azimuth(info) => {
-                    az_ids.push(info.id.clone());
-                    self.create_azimuth(info.clone());
-
-                    if info.is_static {
-                        // Allocate static slot
-                        let object = self.get_object_mut(static_object_id);
-                        let az_state = AzimuthState{ azimuth: info.id.clone(), value_type: info.value_type.clone() };
-                        let state_id = object.allocate_slot();
-                        object.slot_mapping.push((az_state, state_id));
-
-                        match *info.default_value.clone() {
-                            Some(expr) => {
-                                let evaluated: Value = executor::evaluate(self, expr).unwrap();
-                                self.set_slot_value(static_object_id, info.id, evaluated);
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                _ => panic!()
-            }
-        }
-
         let shape = Shape {
             id: info.id,
             name: info.name,
-            azimuths: az_ids,
+            azimuths: info.azimuths,
             def_mappings: HashMap::new(),
             static_object_id: static_object_id,
             num_generics: info.generics.len() as u32,
         };
-
         self.shapes.push(shape);
     }
 
     fn create_azimuth(&mut self, info: AzimuthInfo) {
+        let name = info.name.clone();
+        let id = info.id.clone();
+
         let azimuth = Azimuth {
             id: info.id,
             name: info.name,
-            value_type: info.value_type,
+            value_type: info.value_type.clone(),
             shape_id: info.shape_id,
             is_static: info.is_static,
         };
-
-        println!("Created azimuth with ID {}, '{}'", azimuth.id, azimuth.name);
-
         self.azimuths.push(azimuth);
+
+        if info.is_static {
+            // Allocate static slot
+            let static_object_id = self.get_shape(info.shape_id).static_object_id.clone();
+
+            let object = self.get_object_mut(static_object_id);
+            let az_state = AzimuthState{ azimuth: info.id.clone(), value_type: info.value_type };
+            let state_id = object.allocate_slot();
+            object.slot_mapping.push((az_state, state_id));
+
+            match *info.default_value.clone() {
+                Some(expr) => {
+                    let evaluated: Value = executor::evaluate(self, expr).unwrap();
+                    self.set_slot_value(static_object_id, info.id, evaluated);
+                }
+                _ => {}
+            }
+        }
+
+        println!("Created azimuth with ID {}, '{}'", id, name);
     }
 
     fn define_remapping_on_shape(&mut self, shape_id: ShapeId, from: AzimuthId, to: AzimuthId) {
@@ -529,7 +523,10 @@ impl Runtime {
         println!("Attaching shape {} to object {}", shape_name, object_id);
 
         for id in azimuths {
-            let generic_type = match self.get_azimuth(id).value_type {
+            let azimuth = self.get_azimuth(id);
+            if azimuth.is_static { continue; }
+
+            let generic_type = match azimuth.value_type {
                 ValueKind::Generic(generic) => {
                     shape_id.generics.get(generic as usize).cloned()
                 }
@@ -570,7 +567,10 @@ impl Runtime {
         );
 
         for az_id in azimuths {
-            let generic_type = match self.get_azimuth(az_id).value_type {
+            let azimuth = self.get_azimuth(az_id);
+            if azimuth.is_static { continue; }
+
+            let generic_type = match azimuth.value_type {
                 ValueKind::Generic(generic) => {
                     shape_id.generics.get(generic as usize).cloned()
                 }
@@ -611,6 +611,18 @@ impl Runtime {
         self.shapes.get_mut(id as usize).expect("Shape not found")
     }
 
+    fn get_local(&self, id: LocalId) -> &Value {
+        self.locals.get(id as usize).expect("local not found")
+    }
+
+    fn reserve_local(&mut self, value:Value) {
+        self.locals.push(value);
+    }
+
+    fn clear_locals(&mut self) {
+        self.locals.clear();
+    }
+
     fn is_shape(&self, object_id: ObjectId, shape_id: ShapeId) -> bool {
         let object = self.get_object(object_id);
         let shape = self.get_shape(shape_id);
@@ -631,6 +643,15 @@ impl Runtime {
             if let Some(state) = object.get_slot_state(state_id) {
                 return Some(&state.storage);
             }
+        }
+
+        // Static
+        let azimuth = self.get_azimuth(slot);
+        if azimuth.is_static {
+            let static_id = self.get_shape(azimuth.shape_id).static_object_id.clone();
+            if static_id == object_id { return None; }
+            
+            return self.get_slot_value(static_id, slot);
         }
         None
     }

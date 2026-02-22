@@ -57,11 +57,13 @@ pub enum Expression {
     },
     FunctionCall {
         span: Span,
+        caller: Box<Expression>,
         target: Box<Expression>,
         args: Vec<Expression>,
     },
     Function {
         span: Span,
+        has_self: bool,
         input_types: Vec<RawFunctionParam>,
         output_type: ShapeExpression,
         func: Box<Statement>
@@ -199,41 +201,46 @@ fn parse_expression(tokens: &mut PeekableTokens) -> Result<Expression, ParseErro
         token => return Err(ParseError::UnexpectedToken { span, token, loc:format!("value expression") }),
     };
 
-    // Check for member access
+    let mut caller;
+
+    // Check for member access / function call / array index
     while let Some(token) = tokens.peek() {
         let span = token.span.clone();
+
         if matches!(token.kind, TokenKind::Operator(Operator::Dot)) {
             tokens.next();
             if let TokenKind::Identifier(k) = tokens.next().unwrap().kind {
+                // Access Member
+                caller = expr.clone();
                 expr = Expression::MemberAccess{span,  target: Box::new(expr), member: k };
+
+                // Check for function call
+                if matches!(tokens.peek().unwrap().kind, TokenKind::LeftParen){
+                    let token = tokens.next().unwrap();
+                    let span = token.span.clone();
+
+                    let mut args = Vec::new();
+
+                    while let Some(token) = tokens.peek() {
+                        match token.kind {
+                            TokenKind::RightParen => {
+                                tokens.next();
+                                break
+                            }
+                            TokenKind::Comma => {
+                                tokens.next();
+                            }
+                            _ => {
+                                args.push(parse_expression(tokens)?);
+                            }
+                        }
+                    }
+
+                    expr = Expression::FunctionCall{span, caller:Box::new(caller), target:Box::new(expr), args};
+                }
             }
 
         } else { break; }
-    }
-
-    // Check for function call
-    if matches!(tokens.peek().unwrap().kind, TokenKind::LeftParen){
-        let token = tokens.next().unwrap();
-        let span = token.span.clone();
-
-        let mut args = Vec::new();
-
-        while let Some(token) = tokens.peek() {
-            match token.kind {
-                TokenKind::RightParen => {
-                    tokens.next();
-                    break
-                }
-                TokenKind::Comma => {
-                    tokens.next();
-                }
-                _ => {
-                    args.push(parse_expression(tokens)?);
-                }
-            }
-        }
-
-        expr = Expression::FunctionCall{span, target:Box::new(expr), args};
     }
 
     // Check for operators
@@ -506,7 +513,13 @@ fn parse_statement(tokens: &mut PeekableTokens) -> Result<Statement, ParseError>
                                 let func = parse_function(ShapeExpression::Shape(shape_identifier.clone()), tokens)?;
                                 let value_type = ShapeExpression::Function{func:Box::new(func.clone())};
                                 
-                                let func_expr = Expression::Function{ span:span.clone(), input_types: func.input_types, output_type: func.output_type, func:Box::new(func.func) };
+                                let func_expr = Expression::Function{ 
+                                    span:span.clone(), 
+                                    has_self:func.has_self,
+                                    input_types: func.input_types, 
+                                    output_type: func.output_type, 
+                                    func:Box::new(func.func) 
+                                };
 
                                 slot_ids.push(RawAzimuth { 
                                     name: slot_name, 

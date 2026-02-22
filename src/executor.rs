@@ -1,3 +1,4 @@
+use crate::Function;
 use crate::tokenizer::{Operator, Span};
 use crate::{
     Mapping, ObjectId, PrimitiveValue, Runtime, ShapeId, Value, ValueKind, executor,
@@ -55,6 +56,7 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
             Ok(Value::Array(values))
         },
         ResolvedExpression::Variable(_, Symbol::Object(k)) => Ok(Value::Single(PrimitiveValue::Object(k.id, ValueKind::Shape(OBJECT_INSTANCE)))),
+        ResolvedExpression::Variable(_, Symbol::Local(k)) => Ok(runtime.get_local(k.id).clone()),
 
         ResolvedExpression::UnaryOp { span, operator, operand } => {
             match (operator, evaluate(runtime, *operand)?) {
@@ -70,7 +72,8 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
                         Operator::BWNot => Ok((!val).into()),
                         operator => Err(RuntimeError::InvalidOperator { span, operator, operand:ValueKind::Int32 })
                     },
-                _ => Ok(Value::Empty)
+
+                (operator, operand) => Err(RuntimeError::Error{ span, message: format!("Invalid operation: {:?} {:?}", operator, operand) })
             }
         },
 
@@ -126,14 +129,17 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
                         operator => Err(RuntimeError::InvalidOperator { span, operator, operand: ValueKind::String }),
                     },
 
-                _ => Ok(Value::Empty)
+                (left, op, right) => Err(RuntimeError::Error{ span, message: format!("Invalid operation: {:?} {:?} {:?}", left, op, right) })
             }
         },
         
         ResolvedExpression::MemberAccess{ span, target, member} => {
             match (evaluate(runtime, *target)?, member) {
                 (Value::Single(PrimitiveValue::Object(object_id, _)), Symbol::Azimuth(azimuth)) => {
-                    Ok(runtime.get_slot_value(object_id, azimuth.id).unwrap_or(&Value::Empty).clone())
+                    match runtime.get_slot_value(object_id, azimuth.id) {
+                        Some(value) => Ok(value.clone()),
+                        None => return Err(RuntimeError::Error{span, message:format!("Member {:?} not found for {:?}", azimuth.name, object_id)}),
+                    }
                 }
                 (other, member) => Err(RuntimeError::Error{span, message:format!("Member access not permitted for {:?}.{:?}", other, member)}),
             }
@@ -155,6 +161,11 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
             let statement = &func.func;
             let expected_return = func.output_type.clone();
 
+            // Create locals
+            for param in &params {
+                runtime.reserve_local(param.clone());
+            }
+
             match execute_statement(runtime, statement.clone())? {
                 ExecFlow::Error { span, message } => Err(RuntimeError::Throw { span, message }),
                 ExecFlow::Return(span, Value::Single(value)) => {
@@ -162,11 +173,31 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
                         return Err(RuntimeError::TypeMismatch { span, found: Value::Single(value), expected: expected_return });
                     }
 
+                    // Free locals
+                    runtime.clear_locals();
+
                     Ok(Value::Single(value))
                 },
                 _ => Err(RuntimeError::Error { span, message:format!("No value returned, expected {:?}", expected_return) }),
             }
         },
+
+        ResolvedExpression::Function{ span, has_self, input_types, output_type, func } => {
+            let output_type = evaluate_shape(runtime, output_type);
+            let mut inputs = Vec::new();
+            for input in input_types {
+                inputs.push(evaluate_shape(runtime, input));
+            }
+            
+            let function = Function{ 
+                id: 0, 
+                has_self, 
+                input_types:inputs, 
+                output_type, 
+                func: *func,
+            };
+            Ok(Value::Single(PrimitiveValue::Function(Box::new(function))))
+        }
 
         other => panic!("Invalid expression: {:?}", other)
     }
@@ -242,8 +273,15 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
             Ok(ExecFlow::Normal(span))
         },
 
-        ResolvedStatement::DeclareShape { span, symbol: Symbol::Shape(info) } => {
+        ResolvedStatement::DeclareShape { span, symbol: Symbol::Shape(info), azimuths } => {
             runtime.create_shape(info);
+
+            for azimuth in azimuths {
+                if let Symbol::Azimuth(info) = azimuth {
+                    runtime.create_azimuth(info);
+                }
+            }
+
             Ok(ExecFlow::Normal(span))
         },
 

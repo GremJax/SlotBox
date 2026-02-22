@@ -54,7 +54,7 @@ impl std::fmt::Display for CompileError {
     }
 }
 
-type LocalId = u32;
+pub type LocalId = u32;
 type Identifier = String;
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -62,7 +62,7 @@ pub struct ShapeInfo {
     pub id: ShapeId,
     pub name: Identifier,
     pub static_id: Box<Option<Symbol>>,
-    pub azimuths: Vec<Symbol>,
+    pub azimuths: Vec<AzimuthId>,
     pub generics: Vec<ResolvedShapeExpression>,
 }
 
@@ -80,7 +80,14 @@ pub struct AzimuthInfo {
 pub struct ObjectInfo {
     pub id: ObjectId,
     pub name: Identifier,
-    pub known_shapes: Vec<ResolvedShapeExpression>
+    pub known_shapes: Vec<ValueKind>
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct LocalInfo {
+    pub id: LocalId,
+    pub name: Identifier,
+    pub known_shapes: Vec<ValueKind>
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -88,7 +95,7 @@ pub enum Symbol {
     Shape(ShapeInfo),
     Object(ObjectInfo),
     Azimuth(AzimuthInfo),
-    Local(LocalId),
+    Local(LocalInfo),
 }
 
 impl Symbol {
@@ -120,7 +127,7 @@ pub struct ResolvedMapping {
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum ResolvedStatement {
     Using { span: Span, ast: Vec<ResolvedStatement>, },
-    DeclareShape { span: Span, symbol: Symbol },
+    DeclareShape { span: Span, symbol: Symbol, azimuths: Vec<Symbol> },
     DeclareObject { span: Span, symbol: Symbol },
     Attach { span: Span, object: ResolvedExpression, shape: ResolvedShapeExpression, },
     Detach { span: Span, object: ResolvedExpression, shape: ResolvedShapeExpression },
@@ -203,6 +210,7 @@ pub enum ResolvedExpression {
     },
     Function {
         span: Span,
+        has_self: bool,
         input_types: Vec<ResolvedShapeExpression>,
         output_type: ResolvedShapeExpression,
         func: Box<ResolvedStatement>
@@ -299,6 +307,7 @@ impl Analyzer {
         let symbol = self.get_symbol(id, identifier.clone());
         match symbol {
             Some(Symbol::Object(_)) => symbol,
+            Some(Symbol::Local(info)) => symbol,
             _ => None,
         }
     }
@@ -311,66 +320,112 @@ impl Analyzer {
         }
     }
     
-    fn declare_shape(&mut self, span: Span, scope: ScopeId, name: Identifier, slot_ids: Vec<RawAzimuth>, mappings: Vec<Mapping>, generics: Vec<ShapeExpression>) -> Result<&Symbol, CompileError> {
+    fn declare_shape(&mut self, span: Span, scope_id: ScopeId, name: Identifier, slot_ids: Vec<RawAzimuth>, mappings: Vec<Mapping>, generics: Vec<ShapeExpression>) 
+    -> Result<(&Symbol, Vec<&Symbol>), CompileError> {
         let id = self.next_shape_id.clone();
         self.next_shape_id += 1;
+        
+        // Shape symbol header
+        let symbol = Symbol::Shape(ShapeInfo{
+            id: id,
+            name: name.clone(),
+            static_id: Box::new(None), //static_info),
+            azimuths: Vec::new(), //az_symbols,
+            generics: Vec::new(),//resolved_generics,
+        });
 
         // Azimuths
         let mut az_symbols = Vec::new();
+        let mut az_ids = Vec::new();
         let mut az_id = self.next_azimuth_id.clone();
         let mut has_static = false;
 
-        for azimuth in slot_ids {
-            let default_value = match azimuth.set_value {
-                Some(expr) => Some(self.resolve_expression(expr, scope)?),
-                _ => None,
-            };
-
+        for azimuth in &slot_ids {
+            // Azimuth headers
             let symbol = Symbol::Azimuth(AzimuthInfo {
                 id: az_id,
-                name: azimuth.name,
+                name: azimuth.name.clone(),
                 shape_id: id,
-                default_value: Box::new(default_value),
+                default_value: Box::new(None),//Box::new(default_value),
                 is_static: azimuth.is_static,
-                value_type: self.resolve_shape_expression(azimuth.value_type, scope)?.kind(),
+                value_type: ValueKind::None,//self.resolve_shape_expression(azimuth.value_type, scope)?.kind(),
             });
             if azimuth.is_static { has_static = true; }
+            az_ids.push(az_id);
             az_symbols.push(symbol);
             az_id += 1;
         }
         self.next_azimuth_id = az_id;
+        
+        {
+            let scope = self.get_scope_mut(scope_id);
+
+            // Insert azimuth headers
+            for az_symbol in &az_symbols {
+                match &az_symbol {
+                    Symbol::Azimuth(info) => { scope.symbols.insert(info.name.clone(), az_symbol.clone()); }
+                    _ => { return Err(CompileError::Error{span, message:format!("WHAT")}) }
+                }
+            }
+
+            // Insert shape header
+            scope.symbols.insert(name.clone(), symbol);
+        }
 
         // Generics
         let mut resolved_generics = Vec::new();
         for generic in generics {
-            resolved_generics.push(self.resolve_shape_expression(generic, scope)?);
+            resolved_generics.push(self.resolve_shape_expression(generic, scope_id)?);
         }
 
         // Static singleton
         let static_info = if has_static {
-            Some(self.declare_object(scope, format!("{}::Static", name), ResolvedShapeExpression::Primitive(ValueKind::Shape(OBJECT_INSTANCE))).clone())
+            Some(self.declare_object(scope_id, format!("{}::Static", name), ResolvedShapeExpression::Primitive(ValueKind::Shape(OBJECT_INSTANCE))).clone())
         } else { None };
-        
-        let scope = self.get_scope_mut(scope);
 
-        for az_symbol in &az_symbols {
-            match &az_symbol {
-                Symbol::Azimuth(info) => { scope.symbols.insert(info.name.clone(), az_symbol.clone()); }
-                _ => { return Err(CompileError::Error{span, message:format!("WHAT")}) }
+        // Propegate Shape
+        {
+            let scope = self.get_scope_mut(scope_id);
+            match scope.symbols.get_mut(&name).unwrap() {
+                Symbol::Shape(info) => {
+                    info.azimuths = az_ids;
+                    info.generics = resolved_generics;
+                    info.static_id = Box::new(static_info);
+                }
+                _ => todo!(),
+            }
+        }
+
+        // Propegate Azimuths
+        let mut names = Vec::new();
+        for azimuth in slot_ids {
+            names.push(azimuth.name.clone());
+
+            let default_value = match azimuth.set_value {
+                Some(expr) => Some(self.resolve_expression(expr, scope_id)?),
+                _ => None,
+            };
+
+            let value_type = self.resolve_shape_expression(azimuth.value_type, scope_id)?;
+
+            let scope = self.get_scope_mut(scope_id);
+            let symbol = scope.symbols.get_mut(&azimuth.name).unwrap();
+            match symbol {
+                Symbol::Azimuth(azimuth_info) => {
+                    azimuth_info.value_type = value_type.kind();
+                    azimuth_info.default_value = Box::new(default_value);
+                }
+                _ => todo!(),
             }
         }
         
-        // Shape
-        let symbol = Symbol::Shape(ShapeInfo{
-            id: id,
-            name: name.clone(),
-            static_id: Box::new(static_info),
-            azimuths: az_symbols,
-            generics: resolved_generics,
-        });
+        // Retrieve propegated symbols
+        let mut propegated_az = Vec::new();
+        for name in names {
+            propegated_az.push(self.get_symbol(scope_id, name).unwrap())
+        }
 
-        scope.symbols.insert(name.clone(), symbol);
-        Ok(scope.symbols.get(&name).unwrap())
+        Ok((self.get_symbol(scope_id, name).unwrap(), propegated_az))
     }
 
     fn declare_object(&mut self, scope: ScopeId, name: Identifier, shape: ResolvedShapeExpression) -> &Symbol {
@@ -378,9 +433,21 @@ impl Analyzer {
         self.next_object_id += 1;
 
         let mut known_shapes = Vec::new();
-        known_shapes.push(shape);
+        known_shapes.push(shape.kind());
 
         let symbol = Symbol::Object(ObjectInfo{id: id, name: name.clone(), known_shapes});
+        
+        let scope = self.get_scope_mut(scope);
+        scope.symbols.insert(name.clone(), symbol);
+        scope.symbols.get(&name).unwrap()
+    }
+
+    fn declare_local(&mut self, scope: ScopeId, name: Identifier, shape: ResolvedShapeExpression) -> &Symbol {
+        let mut known_shapes = Vec::new();
+        known_shapes.push(shape.kind());
+
+        let id = 0;
+        let symbol = Symbol::Local(LocalInfo{id: id, name: name.clone(), known_shapes});
         
         let scope = self.get_scope_mut(scope);
         scope.symbols.insert(name.clone(), symbol);
@@ -401,6 +468,7 @@ impl Analyzer {
             Expression::Variable(span, k) => {
                 match self.get_symbol(scope, k.clone()) {
                     Some(Symbol::Object(info)) => Ok(ResolvedExpression::Variable(span, Symbol::Object(info.clone()))),
+                    Some(Symbol::Local(info)) => Ok(ResolvedExpression::Variable(span, Symbol::Local(info.clone()))),
                     Some(Symbol::Shape(info)) => {
                         match *info.static_id.clone() {
                             Some(symbol) => Ok(ResolvedExpression::Variable(span, symbol)),
@@ -487,8 +555,9 @@ impl Analyzer {
                 }
             }
 
-            Expression::FunctionCall { span, target, args } => {
+            Expression::FunctionCall { span, caller, target, args } => {
                 let target = self.resolve_expression(*target, scope)?;
+                let caller = self.resolve_expression(*caller, scope)?;
 
                 let func = match target.kind() {
                     ValueKind::Function(func) => *func,
@@ -499,7 +568,7 @@ impl Analyzer {
 
                 // Add self
                 if func.has_self {
-                    resolved_args.push(target.clone());
+                    resolved_args.push(caller);
                 }
 
                 for index in 0..args.len() {
@@ -518,14 +587,14 @@ impl Analyzer {
                         None => return Err(CompileError::Error { span, message:format!("Too few args: {}, needed: {}", args.len(), func.input_types.len()) }),
                     }
                 }
-                if args.len() < func.input_types.len() {
+                if resolved_args.len() < func.input_types.len() {
                     return Err(CompileError::Error { span, message:format!("Too few args: {}, needed: {}", args.len(), func.input_types.len()) })
                 }
 
                 Ok(ResolvedExpression::FunctionCall{span, target:Box::new(target), args:resolved_args})
             },
 
-            Expression::Function {span, input_types, output_type, func } => {
+            Expression::Function {span, has_self, input_types, output_type, func } => {
 
                 let new_scope = self.create_scope(scope);
 
@@ -533,12 +602,12 @@ impl Analyzer {
                 for input in input_types {
 
                     let value_type = self.resolve_shape_expression(input.value_type, scope)?;
-                    self.declare_object(new_scope, input.identifier, value_type.clone());
+                    self.declare_local(new_scope, input.identifier, value_type.clone());
 
                     resolved_inputs.push(value_type);
                 }
 
-                Ok(ResolvedExpression::Function{span, 
+                Ok(ResolvedExpression::Function{span, has_self, 
                     input_types:resolved_inputs, 
                     output_type:self.resolve_shape_expression(output_type, new_scope)?, 
                     func:Box::new(self.resolve_statement(*func, new_scope)?)})
@@ -608,8 +677,14 @@ impl Analyzer {
                 let my_scope = self.get_scope_mut(scope);
                 if my_scope.symbols.contains_key(&name) { return Err(CompileError::DuplicateSymbol{span, name}); }
     
-                let symbol = self.declare_shape(span.clone(), scope, name, slot_ids, mappings, generics)?;
-                Ok(ResolvedStatement::DeclareShape{ span, symbol:  symbol.clone() })
+                let (symbol, az_symbols) = self.declare_shape(span.clone(), scope, name, slot_ids, mappings, generics)?;
+
+                let mut azimuths = Vec::new();
+                for azimuth in az_symbols {
+                    azimuths.push(azimuth.clone());
+                }
+
+                Ok(ResolvedStatement::DeclareShape{ span, symbol: symbol.clone(), azimuths})
             }
             Statement::DeclareObject { span, name, shape } => {
                 let my_scope = self.get_scope_mut(scope);

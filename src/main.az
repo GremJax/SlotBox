@@ -3,8 +3,8 @@ using "std"
 print "hello world"
 
 shape Box {
-    Width int32
-    Height int32
+    Width int32 = 0
+    Height int32 = 0
 
     Area(self) -> int32 {
         return self.Width * self.Height
@@ -113,6 +113,8 @@ if secondThing.Height < 2 throw "God has abandoned us"
 
 print 6 ..< 8
 
+secondThing.Width = 2
+secondThing.Height = 5
 print secondThing.Area()
 
 print "Program successfully executed!"

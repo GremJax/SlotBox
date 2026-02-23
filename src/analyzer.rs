@@ -148,7 +148,10 @@ pub enum ResolvedStatement {
         statement: Box<ResolvedStatement>,
     },
     For {
-        
+        span: Span, 
+        local: Symbol,
+        target: ResolvedExpression,
+        statement: Box<ResolvedStatement>,
     },
     Assign { span: Span, target: ResolvedExpression, value: ResolvedExpression },
     Block(Vec<ResolvedStatement>),
@@ -788,7 +791,23 @@ impl Analyzer {
                 Ok(ResolvedStatement::While{span, condition: resolved_condition, statement: Box::new(resolved_statement)})
             }
             
-            Statement::For { span, local, statement } => todo!(),
+            Statement::For { span, local, target, statement } => {
+                let target = self.resolve_expression(target, scope)?;
+
+                let iterable_type = match target.kind() {
+                    ValueKind::Array(kind) => ShapeExpression::Primitive(*kind),
+                    other => return Err(CompileError::Error{span, message:format!("Expected array in for loop declaration, got {:?}",other)}),
+                };
+
+                let new_scope = self.create_scope(scope);
+                
+                let resolved_type = self.resolve_shape_expression(iterable_type, scope)?;
+                let local = self.declare_local(new_scope, local, resolved_type.clone()).clone();
+
+                let statement = self.resolve_statement(*statement, new_scope)?;
+
+                Ok(ResolvedStatement::For{span, local, target, statement:Box::new(statement)})
+            }
 
             Statement::Assign {span, target, value } => {
                 let target = self.resolve_expression(target, scope)?;

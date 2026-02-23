@@ -143,4 +143,8 @@ print thirdThing
 thirdThing.List[2] = Box.Bleedle(5, 5)
 print thirdThing
 
+for i in 0 ..< 10 {
+    print i
+}
+
 print "Program successfully executed!"

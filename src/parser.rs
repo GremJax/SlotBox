@@ -144,7 +144,8 @@ pub enum Statement {
     },
     For {
         span: Span, 
-        local: Expression,
+        local: Identifier,
+        target: Expression,
         statement: Box<Statement>,
     },
     Assign { span: Span, target: Expression, value: Expression, },
@@ -669,6 +670,29 @@ fn parse_statement(tokens: &mut PeekableTokens) -> Result<Statement, ParseError>
             let statement = parse_statement(tokens)?;
 
             Ok(Statement::While{span, condition, statement: Box::new(statement) })
+        },
+        
+        // For
+        TokenKind::Keyword(Keyword::For) => {
+            tokens.next(); // Consume keyword
+
+            // Expect local identifier
+            let local = match tokens.next().unwrap().kind {
+                TokenKind::Identifier(k) => k,
+                token => return Err(ParseError::IncorrectToken { span, token, expected: format!("identifier"), loc: format!("For loop header") }),
+            };
+            
+            // Expect in keyword
+            match tokens.next().unwrap().kind {
+                TokenKind::Keyword(Keyword::In) => {}
+                token => return Err(ParseError::IncorrectToken { span, token, expected: format!("in"), loc: format!("For loop header") }),
+            };
+
+            let target = parse_expression(tokens)?;
+
+            let statement = parse_statement(tokens)?;
+
+            Ok(Statement::For{span, local, target, statement:Box::new(statement) })
         },
 
         // Returns

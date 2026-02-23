@@ -190,6 +190,7 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
 
                     // Free locals
                     runtime.clear_locals();
+                    //runtime.clear_locals(&params);
 
                     Ok(Value::Single(value))
                 },
@@ -428,7 +429,28 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
             Ok(ExecFlow::Normal(span))
         }
 
-        ResolvedStatement::For{ } => todo!(),
+        ResolvedStatement::For{ span, local, target, statement } => {
+            
+            let target = match evaluate(runtime, target)? {
+                Value::Array(vec, _) => vec,
+                other => return Err(RuntimeError::TypeMismatch { span, found: other, expected: ValueKind::Array(Box::new(ValueKind::None)) }),
+            };
+
+            for item in target {
+                runtime.reserve_local(*item);
+
+                match execute_statement(runtime, *statement.clone())? {
+                    ExecFlow::Continue(_) => continue,
+                    ExecFlow::Break(_) => break,
+                    ExecFlow::Normal(_) => {},
+                    flow => return Ok(flow)
+                }
+
+                runtime.clear_locals();
+            }
+
+            Ok(ExecFlow::Normal(span))
+        }
 
         ResolvedStatement::Block(statements) => {
             let mut last_span = Span{line: 0, column: 0};

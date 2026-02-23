@@ -7,7 +7,7 @@ use crate::Value;
 pub enum Operator {
     Add, Sub, Mul, Div, Mod,
     AddAssign, SubAssign, MulAssign, DivAssign, ModAssign,
-    Inc, Dec, 
+    Inc, Dec, Len,
     BWAnd, BWOr, BWXor, BWNot, BWShiftL, BWShiftR,
     Equal, NEqual, LT, GT, LTE, GTE, 
     Not, And, Or,
@@ -17,7 +17,7 @@ pub enum Operator {
     IsShape, NIsShape
 }
 
-pub const UNARY_OPERATORS: &[Operator] = &[ Operator::BWNot, Operator::Not, Operator::Dec, Operator::Inc ];
+pub const UNARY_OPERATORS: &[Operator] = &[ Operator::BWNot, Operator::Not, Operator::Dec, Operator::Inc, Operator::Sub, Operator::Len ];
 pub const BINARY_OPERATORS: &[Operator] = &[
     Operator::Add, Operator::Sub, Operator::Mul, Operator::Div, Operator::Mod,
     Operator::Equal, Operator::NEqual, Operator::GT, Operator::LT, Operator::GTE, Operator::LTE,
@@ -212,6 +212,7 @@ pub fn tokenize(input: &str) -> Vec<Token> {
                     "continue" => TokenKind::Keyword(Keyword::Continue),
                     "throw" => TokenKind::Keyword(Keyword::Throw),
                     "print" => TokenKind::Keyword(Keyword::Print),
+                    "len" => TokenKind::Operator(Operator::Len),
 
                     "int32" => TokenKind::Type(ValueKind::Int32),
                     "bool" => TokenKind::Type(ValueKind::Bool),

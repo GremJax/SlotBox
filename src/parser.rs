@@ -466,6 +466,16 @@ fn parse_object_statement(span:Span, tokens: &mut PeekableTokens) -> Result<Stat
             let value = parse_expression(tokens)?;
             Ok(Statement::AssignAugmented{ span, target: object, value, operator:Operator::Mod })
         }
+        TokenKind::Operator(Operator::Inc) => {
+            tokens.next(); // consume operator
+            let one = Expression::Value(span.clone(), Value::Single(PrimitiveValue::Int32(1)));
+            Ok(Statement::AssignAugmented{ span, target: object, value:one, operator:Operator::Add })
+        }
+        TokenKind::Operator(Operator::Dec) => {
+            tokens.next(); // consume operator
+            let one = Expression::Value(span.clone(), Value::Single(PrimitiveValue::Int32(-1)));
+            Ok(Statement::AssignAugmented{ span, target: object, value:one, operator:Operator::Add })
+        }
 
         token => return Err(ParseError::UnexpectedToken { span, token:token.clone(), loc:format!("object operation") }),
     }

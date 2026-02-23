@@ -521,7 +521,20 @@ impl Analyzer {
                         Operator::Inc => Ok(ResolvedExpression::Value(span, (val + 1).into())),
                         Operator::Dec => Ok(ResolvedExpression::Value(span, (val - 1).into())),
                         Operator::BWNot => Ok(ResolvedExpression::Value(span, (!val).into())),
+                        Operator::Sub => Ok(ResolvedExpression::Value(span, (-val).into())),
                         operator => Err(CompileError::InvalidUnaryOp { span, operator, operand:val.into()}),
+                    },
+
+                    // String Optimization
+                    ResolvedExpression::Value(span, Value::Single(PrimitiveValue::String(val))) => match operator {
+                        Operator::Len => Ok(ResolvedExpression::Value(span, (val.len() as i32).into())),
+                        operator => Err(CompileError::InvalidUnaryOp { span, operator, operand:val.into()}),
+                    },
+
+                    // Array Optimization
+                    ResolvedExpression::Value(span, Value::Array(vec, kind)) => match operator {
+                        Operator::Len => Ok(ResolvedExpression::Value(span, (vec.len() as i32).into())),
+                        operator => Err(CompileError::InvalidUnaryOp { span, operator, operand:Value::Array(vec, kind)}),
                     },
 
                     // Default

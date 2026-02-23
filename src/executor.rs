@@ -70,7 +70,18 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
                         Operator::Inc => Ok((val + 1).into()),
                         Operator::Dec => Ok((val - 1).into()),
                         Operator::BWNot => Ok((!val).into()),
+                        Operator::Sub => Ok((-val).into()),
                         operator => Err(RuntimeError::InvalidOperator { span, operator, operand:ValueKind::Int32 })
+                    },
+                (op, Value::Single(PrimitiveValue::String(val))) => 
+                    match op {
+                        Operator::Len => Ok((val.len() as i32).into()),
+                        operator => Err(RuntimeError::InvalidOperator { span, operator, operand:ValueKind::String })
+                    },
+                (op, Value::Array(vec, val)) => 
+                    match op {
+                        Operator::Len => Ok((vec.len() as i32).into()),
+                        operator => Err(RuntimeError::InvalidOperator { span, operator, operand:ValueKind::Array(Box::new(val)) })
                     },
 
                 (operator, operand) => Err(RuntimeError::Error{ span, message: format!("Invalid operation: {:?} {:?}", operator, operand) })

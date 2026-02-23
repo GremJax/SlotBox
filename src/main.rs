@@ -24,6 +24,7 @@ pub enum ValueKind {
     Option(Box<ValueKind>),
     Object(ObjectId, Box<ValueKind>),
     Pointer(ObjectId, AzimuthId, Box<ValueKind>),
+    ArrayElement(Box<ValueKind>),
     Function(Box<FunctionInfo>),
     Generic(GenericId),
     #[default] None
@@ -50,6 +51,7 @@ impl ValueKind {
             ValueKind::Option(k) => k.is_assignable_from(other),
             ValueKind::Object(_, k) => k.is_assignable_from(other),
             ValueKind::Pointer(_, _, k) => k.is_assignable_from(other),
+            ValueKind::ArrayElement(k) => k.is_assignable_from(other),
             ValueKind::Function(info) => other == ValueKind::Function(info.clone()),
             ValueKind::Generic(_) => true,
             ValueKind::None => other == ValueKind::None,
@@ -70,6 +72,7 @@ pub enum PrimitiveValue {
     Azimuth(AzimuthState),
     Object(ObjectId, ValueKind),
     Pointer(ObjectId, AzimuthId, ValueKind),
+    ArrayElement(ObjectId, AzimuthId, ValueKind, usize),
     Function(Box<Function>),
     #[default] None,
 }
@@ -87,6 +90,7 @@ impl PrimitiveValue {
             PrimitiveValue::Azimuth(s) => ValueKind::Azimuth(Box::new(s.value_type.clone())),
             PrimitiveValue::Object(_, kind) => kind.clone(),
             PrimitiveValue::Pointer(_, _, kind) => kind.clone(),
+            PrimitiveValue::ArrayElement(_, _, kind, _) => kind.clone(),
             PrimitiveValue::Function(func) => 
                 ValueKind::Function(Box::new(FunctionInfo{
                     has_self:func.has_self,

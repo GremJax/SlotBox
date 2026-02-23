@@ -44,8 +44,7 @@ shape Counts {
 
 print "__"
 
-let firstThing
-firstThing := Point
+let firstThing := Point
 print firstThing
 
 firstThing := Named
@@ -77,8 +76,7 @@ print firstThing
 //firstThing.Thing = 
 //print firstThing
 
-let secondThing
-secondThing := Box
+let secondThing := Box
 secondThing.Height = 6
 print secondThing
 
@@ -138,9 +136,11 @@ print secondThing.Bibble(5)
 print Box.Bleedle(5, 5)
 print Box.Cardboard(5, 5, 5, 5)
 
-let thirdThing
-thirdThing := Arrayed
-thirdThing.List = 0 ... 10
+let thirdThing := Arrayed
+thirdThing.List = [5, 2, 61]
+print thirdThing
+
+thirdThing.List[2] = Box.Bleedle(5, 5)
 print thirdThing
 
 print "Program successfully executed!"

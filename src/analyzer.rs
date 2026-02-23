@@ -129,7 +129,8 @@ pub struct ResolvedMapping {
 pub enum ResolvedStatement {
     Using { span: Span, ast: Vec<ResolvedStatement>, },
     DeclareShape { span: Span, symbol: Symbol, azimuths: Vec<Symbol> },
-    DeclareObject { span: Span, symbol: Symbol },
+    DeclareObject { span: Span, symbol: Symbol,
+    shape: ResolvedShapeExpression },
     Attach { span: Span, object: ResolvedExpression, shape: ResolvedShapeExpression, },
     Detach { span: Span, object: ResolvedExpression, shape: ResolvedShapeExpression },
     AddMapping { span: Span, object: ResolvedExpression, mapping: ResolvedMapping },
@@ -231,10 +232,18 @@ impl ResolvedExpression {
             ResolvedExpression::Value(_, value) => value.kind(),
             ResolvedExpression::Array(_, _, value_type) => ValueKind::Array(Box::new(value_type.clone())),
             ResolvedExpression::Variable(_, symbol) => symbol.kind(),
-            ResolvedExpression::UnaryOp {span:_,  operator, operand:_ } => operator.kind(),
-            ResolvedExpression::BinaryOp {span:_, left:_, operator, right:_ } => operator.kind(),
-            ResolvedExpression::MemberAccess {span:_, target:_, member } => member.kind(),
-            _ => todo!()
+            ResolvedExpression::UnaryOp { operator, .. } => operator.kind(),
+            ResolvedExpression::BinaryOp { operator, .. } => operator.kind(),
+            ResolvedExpression::MemberAccess { member, .. } => member.kind(),
+            ResolvedExpression::ArrayAccess { target, .. } => match target.kind() {
+                ValueKind::Array(value_type) => *value_type.clone(),
+                _ => todo!()
+            }
+            ResolvedExpression::FunctionCall { target, .. } => match target.kind() {
+                ValueKind::Function(info) => info.output_type.clone(),
+                _ => todo!()
+            }
+            ResolvedExpression::Function { output_type, .. } => output_type.kind(),
         }
     }
 }
@@ -720,8 +729,8 @@ impl Analyzer {
 
                 let shape = self.resolve_shape_expression(shape, scope)?;
     
-                let symbol = self.declare_object(scope, name, shape);
-                Ok(ResolvedStatement::DeclareObject{ span, symbol: symbol.clone() })
+                let symbol = self.declare_object(scope, name, shape.clone());
+                Ok(ResolvedStatement::DeclareObject{ span, symbol: symbol.clone(), shape })
             }
             Statement::Attach { span, object, shape } => {
                 let shape = self.resolve_shape_expression(shape, scope)?;

@@ -5,7 +5,7 @@ use crate::{
     analyzer::{ResolvedExpression, ResolvedShapeExpression, ResolvedStatement, Symbol},
 };
 use std::collections::{HashMap, HashSet};
-use std::fs;
+use std::{fs, usize};
 
 #[derive(Debug, Clone)]
 pub enum RuntimeError {
@@ -228,6 +228,22 @@ pub fn evaluate_place(runtime: &mut Runtime, expression:ResolvedExpression) -> R
                 (other, member) => Err(RuntimeError::Error{span, message:format!("Member access not permitted for {:?}.{:?}", other, member)}),
             }
         },
+        ResolvedExpression::ArrayAccess{ span, target, index} => {
+            let target = evaluate_place(runtime, *target)?;
+            let index = evaluate(runtime, *index)?;
+            
+            let i = if let Value::Single(PrimitiveValue::Int32(index)) = index {
+                index as usize
+            } else { return Err(RuntimeError::TypeMismatch { span, found: index, expected: ValueKind::Int32 }) };
+            
+            match target {
+                Value::Single(PrimitiveValue::Pointer(object_id, azimuth_id, kind)) => {
+                    Ok(Value::Single(PrimitiveValue::ArrayElement(object_id, azimuth_id, kind, i)))
+                }
+                other => Err(RuntimeError::Error{span, message:format!("Array access not permitted for {:?}[{}]", other, i)})
+            }
+            
+        },
         other => evaluate(runtime, other), 
     }
 }
@@ -300,8 +316,15 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
             Ok(ExecFlow::Normal(span))
         },
 
-        ResolvedStatement::DeclareObject { span, symbol: Symbol::Object(id) } => {
-            runtime.create_object(id);
+        ResolvedStatement::DeclareObject { span, symbol: Symbol::Object(info), shape } => {
+            let id = info.id.clone();
+
+            runtime.create_object(info);
+
+            if let ValueKind::Shape(inst) = evaluate_shape(runtime, shape){
+                runtime.attach_shape(id, inst);
+            }
+            
             Ok(ExecFlow::Normal(span))
         },
 
@@ -358,9 +381,10 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
 
             match evaluate_place(runtime, target)? {
                 Value::Single(PrimitiveValue::Pointer(object_id, az, kind)) => {
-                    
                     runtime.set_slot_value(object_id, az, val);
-
+                }
+                Value::Single(PrimitiveValue::ArrayElement(obj, az, kind, i)) => {
+                    runtime.set_slot_value_array_element(obj, az, i, val);
                 }
                 other => return Err(RuntimeError::Error{span, message:format!("Could not assign {:?} to {:?}", val, other)}),
             }

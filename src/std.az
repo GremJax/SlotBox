@@ -2,6 +2,29 @@ print "loading standard library..."
 
 shape Object {}
 
+shape Math {
+    
+    Add(int32 a, int32 b) -> int32 return a + b
+    Subtract(int32 a, int32 b) -> int32 return a - b
+    Multiply(int32 a, int32 b) -> int32 return a * b
+    Divide(int32 a, int32 b) -> int32 return a / b
+    Modulo(int32 a, int32 b) -> int32 return a % b
+
+    Pow(int32 x, int32 exp) -> int32 {
+        let res = 1
+        for i in 1 ... exp {
+            res *= x
+        }
+        return res
+    }
+
+}
+
+shape Int32 {
+    MAX static const int32 = 2147483647
+    MIN static const int32 = -2147483648
+}
+
 shape Point {
     X int32
     Y int32

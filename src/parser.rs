@@ -39,6 +39,7 @@ pub enum Expression {
     Value(Span, Value),
     Array(Span, Vec<Expression>, Option<ValueKind>),
     Variable(Span, Identifier),
+    Option(Span, Box<Option<Expression>>),
     UnaryOp {
         span: Span,
         operator: Operator,
@@ -126,6 +127,7 @@ pub enum Statement {
         generics: Vec<ShapeExpression>,
     },
     DeclareObject { span: Span, name: Identifier, shape: ShapeExpression }, 
+    DeclareLocal { span: Span, name: Identifier, value: Expression }, 
     Attach { span: Span, object: Expression, shape: ShapeExpression },
     Detach { span: Span, object: Expression, shape: ShapeExpression },
     AddMapping { span: Span, object: Expression, mapping: Mapping },
@@ -261,6 +263,16 @@ fn parse_expression(tokens: &mut PeekableTokens) -> Result<Expression, ParseErro
         }
     }
 
+    // Check for option
+    if let Some(token) = tokens.peek() {
+        let span = token.span.clone();
+        if matches!(&token.kind, TokenKind::Operator(Operator::Question))
+        {
+            tokens.next(); // consume question mark
+            expr = Expression::Option(span, Box::new(Some(expr)));
+        }
+    }
+
     // Check for operators
     if let Some(token) = tokens.peek() {
         let span = token.span.clone();
@@ -276,6 +288,7 @@ fn parse_expression(tokens: &mut PeekableTokens) -> Result<Expression, ParseErro
             }
         }
     }
+
     Ok(expr)
 }
 
@@ -365,13 +378,12 @@ fn parse_function(shape: ShapeExpression, tokens: &mut PeekableTokens) -> Result
     }
 
     // Expect arrow
-    let token = tokens.next().unwrap();
-    if !matches!(token.kind, TokenKind::Operator(Operator::Arrow)) {
-        return Err(ParseError::IncorrectToken { span:token.span, token:token.kind, expected:format!("->"), loc:format!("function return definition") })
-    }
-
-    // Return type
-    let output_type = parse_shape_expression(tokens)?;
+    let token = tokens.peek().unwrap();
+    let output_type = if matches!(token.kind, TokenKind::Operator(Operator::Arrow)) {
+        tokens.next(); // Consume arrow
+        // Return type
+        parse_shape_expression(tokens)?
+    } else { ShapeExpression::Primitive(ValueKind::None) };
 
     // Statement
     let func = parse_statement(tokens)?;
@@ -465,6 +477,21 @@ fn parse_object_statement(span:Span, tokens: &mut PeekableTokens) -> Result<Stat
             tokens.next(); // consume operator
             let value = parse_expression(tokens)?;
             Ok(Statement::AssignAugmented{ span, target: object, value, operator:Operator::Mod })
+        }
+        TokenKind::Operator(Operator::AndAssign) => {
+            tokens.next(); // consume operator
+            let value = parse_expression(tokens)?;
+            Ok(Statement::AssignAugmented{ span, target: object, value, operator:Operator::BWAnd })
+        }
+        TokenKind::Operator(Operator::OrAssign) => {
+            tokens.next(); // consume operator
+            let value = parse_expression(tokens)?;
+            Ok(Statement::AssignAugmented{ span, target: object, value, operator:Operator::BWOr })
+        }
+        TokenKind::Operator(Operator::XorAssign) => {
+            tokens.next(); // consume operator
+            let value = parse_expression(tokens)?;
+            Ok(Statement::AssignAugmented{ span, target: object, value, operator:Operator::BWXor })
         }
         TokenKind::Operator(Operator::Inc) => {
             tokens.next(); // consume operator
@@ -577,6 +604,15 @@ fn parse_statement(tokens: &mut PeekableTokens) -> Result<Statement, ParseError>
                                 _ => false
                             };
 
+                            // Const
+                            let is_const = match tokens.peek().unwrap().kind {
+                                TokenKind::Keyword(Keyword::Const) => {
+                                    tokens.next();
+                                    true
+                                }
+                                _ => false
+                            };
+
                             // Type
                             let value_type = parse_shape_expression(tokens)?;
 
@@ -613,14 +649,25 @@ fn parse_statement(tokens: &mut PeekableTokens) -> Result<Statement, ParseError>
                 token => return Err(ParseError::UnexpectedToken { span, token, loc:format!("object declaration") }),
             };
 
-            let shape = if matches!(tokens.peek().unwrap().kind, TokenKind::Operator(Operator::Attach)) {
-                tokens.next();
-                parse_shape_expression(tokens)?
-            } else {
-                ShapeExpression::Primitive(ValueKind::Shape(OBJECT_INSTANCE))
-            };
-
-            Ok(Statement::DeclareObject {span, name: object_identifier, shape })
+            let token = tokens.peek().unwrap();
+            match token.kind {
+                TokenKind::Operator(Operator::Attach) => {
+                    // Object with attachment
+                    tokens.next();
+                    let shape = parse_shape_expression(tokens)?;
+                    Ok(Statement::DeclareObject {span, name: object_identifier, shape })
+                }
+                TokenKind::Operator(Operator::Assign) => {
+                    // Local with assignment
+                    tokens.next();
+                    let value = parse_expression(tokens)?;
+                    Ok(Statement::DeclareLocal {span, name: object_identifier, value })
+                }
+                _ => {
+                    // Object without assignment
+                    Ok(Statement::DeclareObject {span, name: object_identifier, shape:ShapeExpression::Primitive(ValueKind::Shape(OBJECT_INSTANCE)) })
+                }
+            }
         },
 
         // print

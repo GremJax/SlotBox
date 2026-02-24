@@ -96,7 +96,7 @@ impl PrimitiveValue {
                     has_self:func.has_self,
                     id:func.id, 
                     output_type:func.output_type.clone(),
-                    input_types:func.input_types.clone()
+                    input_types:func.input_types.iter().map(|param| param.kind.clone()).collect(),
                 })),
             PrimitiveValue::None => ValueKind::None,
         }
@@ -127,9 +127,15 @@ impl std::fmt::Display for PrimitiveValue {
 pub struct Function {
     pub id: AzimuthId,
     pub has_self:bool,
-    pub input_types: Vec<ValueKind>,
+    pub input_types: Vec<FunctionParameter>,
     pub output_type: ValueKind,
     pub func: ResolvedStatement,
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct FunctionParameter {
+    pub kind: ValueKind,
+    pub local: LocalId,
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -349,7 +355,7 @@ pub struct Runtime {
     shapes: Vec<Shape>,    
     azimuths: Vec<Azimuth>,
     objects: Vec<Object>,
-    locals: Vec<Value>,
+    locals: HashMap<LocalId, Value>,
     next_object_id: ObjectId,
     next_shape_id: ShapeId,
     next_azimuth_id: AzimuthId,
@@ -372,7 +378,7 @@ impl Runtime {
             next_object_id: 1,
             next_shape_id: 0,
             next_azimuth_id: 0,
-            locals: Vec::new(),
+            locals: HashMap::new(),
         };
         runtime.objects.push(global);
         runtime
@@ -654,15 +660,21 @@ impl Runtime {
     }
 
     fn get_local(&self, id: LocalId) -> &Value {
-        self.locals.get(id as usize).expect("local not found")
+        self.locals.get(&id).expect("local not found")
     }
 
-    fn reserve_local(&mut self, value:Value) {
-        self.locals.push(value);
+    fn reserve_local(&mut self, id: LocalId, value:Value) {
+        self.locals.insert(id, value);
     }
 
-    fn clear_locals(&mut self) {
-        self.locals.clear();
+    fn clear_local(&mut self, id: LocalId) {
+        self.locals.remove(&id);
+    }
+
+    fn clear_locals(&mut self, ids: Vec<LocalId>) {
+        for id in ids {
+            self.clear_local(id);
+        }
     }
 
     fn is_shape(&self, object_id: ObjectId, shape_id: ShapeId) -> bool {

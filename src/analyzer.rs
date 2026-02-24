@@ -11,7 +11,7 @@ pub enum CompileError {
     UndefinedStatic { span: Span, name: String },
     DuplicateSymbol { span: Span, name: String },
     ExpectedBoolCondition { span: Span, found: ValueKind },
-    TypeMismatch { span: Span, expected: ValueKind, found: ValueKind },
+    TypeMismatch { span: Span, expected: ValueKind, found: ValueKind, loc: String },
     InvalidUnaryOp { span: Span, operator: Operator, operand: Value },
     InvalidBinaryOp { span: Span, operator: Operator, left: Value, right: Value },
     InvalidThrow { span: Span, found: ValueKind },
@@ -33,8 +33,8 @@ impl std::fmt::Display for CompileError {
             CompileError::ExpectedBoolCondition { span, found } =>
                 write!(f, "{}: Expected bool condition, got {:?}", span, found),
 
-            CompileError::TypeMismatch { span, expected, found } =>
-                write!(f, "{}: Type mismatch: expected {:?}, got {:?}", span, expected, found),
+            CompileError::TypeMismatch { span, expected, found, loc } =>
+                write!(f, "{}: Type mismatch: expected {:?} for {}, got {:?}", span, expected, loc, found),
 
             CompileError::InvalidUnaryOp { span, operator, operand } =>
                 write!(f, "{}: Invalid unary operator {:?} on {:?}", span, operator, operand),
@@ -104,7 +104,7 @@ impl Symbol {
             Symbol::Shape(info) => ValueKind::Shape(ShapeInstance{id: info.id, generics: Vec::new()}),
             Symbol::Object(info) => ValueKind::Shape(executor::OBJECT_INSTANCE),
             Symbol::Azimuth(info) => info.value_type.clone(),
-            Symbol::Local(info) => ValueKind::None,
+            Symbol::Local(info) => info.known_shapes.first().unwrap().clone(),
         }
     }
 }
@@ -126,11 +126,17 @@ pub struct ResolvedMapping {
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct ResolvedFunctionParameter {
+    pub shape: ResolvedShapeExpression,
+    pub local: LocalId
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum ResolvedStatement {
     Using { span: Span, ast: Vec<ResolvedStatement>, },
     DeclareShape { span: Span, symbol: Symbol, azimuths: Vec<Symbol> },
-    DeclareObject { span: Span, symbol: Symbol,
-    shape: ResolvedShapeExpression },
+    DeclareObject { span: Span, symbol: Symbol, shape: ResolvedShapeExpression },
+    DeclareLocal { span: Span, symbol: Symbol, value: ResolvedExpression },
     Attach { span: Span, object: ResolvedExpression, shape: ResolvedShapeExpression, },
     Detach { span: Span, object: ResolvedExpression, shape: ResolvedShapeExpression },
     AddMapping { span: Span, object: ResolvedExpression, mapping: ResolvedMapping },
@@ -149,7 +155,7 @@ pub enum ResolvedStatement {
     },
     For {
         span: Span, 
-        local: Symbol,
+        local: LocalId,
         target: ResolvedExpression,
         statement: Box<ResolvedStatement>,
     },
@@ -194,6 +200,7 @@ pub enum ResolvedExpression {
     Value(Span, Value),
     Array(Span, Vec<ResolvedExpression>, ValueKind),
     Variable(Span, Symbol),
+    Option(Span, Box<Option<ResolvedExpression>>),
     UnaryOp {
         span: Span,
         operator: Operator,
@@ -223,7 +230,7 @@ pub enum ResolvedExpression {
     Function {
         span: Span,
         has_self: bool,
-        input_types: Vec<ResolvedShapeExpression>,
+        input_types: Vec<ResolvedFunctionParameter>,
         output_type: ResolvedShapeExpression,
         func: Box<ResolvedStatement>
     }
@@ -235,6 +242,10 @@ impl ResolvedExpression {
             ResolvedExpression::Value(_, value) => value.kind(),
             ResolvedExpression::Array(_, _, value_type) => ValueKind::Array(Box::new(value_type.clone())),
             ResolvedExpression::Variable(_, symbol) => symbol.kind(),
+            ResolvedExpression::Option(_, option) => match *option.clone() {
+                Some(expr) => expr.kind(),
+                None => ValueKind::None,
+            }
             ResolvedExpression::UnaryOp { operator, .. } => operator.kind(),
             ResolvedExpression::BinaryOp { operator, .. } => operator.kind(),
             ResolvedExpression::MemberAccess { member, .. } => member.kind(),
@@ -493,6 +504,8 @@ impl Analyzer {
 
                 Ok(ResolvedExpression::Array(span, values, kind))
             },
+
+            Expression::Option(span, option) => todo!(),
             
             Expression::Variable(span, k) => {
                 match self.get_symbol(scope, k.clone()) {
@@ -602,7 +615,7 @@ impl Analyzer {
                 let index = self.resolve_expression(*index, scope)?;
 
                 if !index.kind().is_assignable_from(ValueKind::Int32) {
-                    return Err(CompileError::TypeMismatch { span, expected: ValueKind::Int32, found: index.kind() });
+                    return Err(CompileError::TypeMismatch { span, expected: ValueKind::Int32, found: index.kind(), loc:format!("array index") });
                 }
 
                 Ok(ResolvedExpression::ArrayAccess{span, target:Box::new(target), index:Box::new(index)})
@@ -631,7 +644,7 @@ impl Analyzer {
                         Some(param) => {
                             // Type check
                             if !arg.kind().is_assignable_from(param.clone()) {
-                                return Err(CompileError::TypeMismatch { span, expected: param.clone(), found: arg.kind()})
+                                return Err(CompileError::TypeMismatch { span, expected: param.clone(), found: arg.kind(), loc:format!("function param")})
                             }
 
                             // Accept arg
@@ -655,9 +668,16 @@ impl Analyzer {
                 for input in input_types {
 
                     let value_type = self.resolve_shape_expression(input.value_type, scope)?;
-                    self.declare_local(new_scope, input.identifier, value_type.clone());
+                    let symbol = self.declare_local(new_scope, input.identifier, value_type.clone());
 
-                    resolved_inputs.push(value_type);
+                    let id = match symbol {
+                        Symbol::Local(info) => info.id,
+                        _ => todo!()
+                    };
+
+                    let resolved_input = ResolvedFunctionParameter{ shape:value_type, local:id };
+
+                    resolved_inputs.push(resolved_input);
                 }
 
                 Ok(ResolvedExpression::Function{span, has_self, 
@@ -748,6 +768,16 @@ impl Analyzer {
                 let symbol = self.declare_object(scope, name, shape.clone());
                 Ok(ResolvedStatement::DeclareObject{ span, symbol: symbol.clone(), shape })
             }
+            Statement::DeclareLocal { span, name, value } => {
+                let my_scope = self.get_scope_mut(scope);
+                if my_scope.symbols.contains_key(&name) { return Err(CompileError::DuplicateSymbol{span, name}); }
+
+                let value = self.resolve_expression(value, scope)?;
+                let kind = ResolvedShapeExpression::Primitive(value.kind());
+    
+                let symbol = self.declare_local(scope, name, kind);
+                Ok(ResolvedStatement::DeclareLocal{ span, symbol: symbol.clone(), value })
+            }
             Statement::Attach { span, object, shape } => {
                 let shape = self.resolve_shape_expression(shape, scope)?;
 
@@ -817,9 +847,14 @@ impl Analyzer {
                 let resolved_type = self.resolve_shape_expression(iterable_type, scope)?;
                 let local = self.declare_local(new_scope, local, resolved_type.clone()).clone();
 
+                let id = match local {
+                    Symbol::Local(info) => info.id,
+                    _ => todo!()
+                };
+
                 let statement = self.resolve_statement(*statement, new_scope)?;
 
-                Ok(ResolvedStatement::For{span, local, target, statement:Box::new(statement)})
+                Ok(ResolvedStatement::For{span, local:id, target, statement:Box::new(statement)})
             }
 
             Statement::Assign {span, target, value } => {
@@ -827,7 +862,7 @@ impl Analyzer {
                 let value = self.resolve_expression(value, scope)?;
 
                 if target.kind() != value.kind() {
-                    return Err(CompileError::TypeMismatch { span, expected: target.kind(), found: value.kind() })
+                    return Err(CompileError::TypeMismatch { span, expected: target.kind(), found: value.kind(), loc:format!("value assignment") })
                 }
 
                 Ok(ResolvedStatement::Assign{ span, target, value })
@@ -838,8 +873,11 @@ impl Analyzer {
                 let value = self.resolve_expression(value, scope)?;
 
                 // Ensure int types
-                if target.kind() != ValueKind::Int32 || value.kind() != ValueKind::Int32 {
-                    return Err(CompileError::TypeMismatch { span, expected: ValueKind::Int32, found: target.kind() })
+                if target.kind() != ValueKind::Int32 {
+                    return Err(CompileError::TypeMismatch { span, expected: ValueKind::Int32, found: target.kind(), loc:format!("augmented assignment target") })
+                }
+                if value.kind() != ValueKind::Int32 {
+                    return Err(CompileError::TypeMismatch { span, expected: ValueKind::Int32, found: value.kind(), loc:format!("augmented assignment value") })
                 }
 
                 let expr = ResolvedExpression::BinaryOp {span:span.clone(), left: Box::new(target.clone()), operator, right: Box::new(value) };

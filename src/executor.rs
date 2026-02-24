@@ -1,4 +1,5 @@
-use crate::Function;
+use crate::analyzer::LocalId;
+use crate::{Function, FunctionParameter};
 use crate::tokenizer::{Operator, Span};
 use crate::{
     Mapping, ObjectId, PrimitiveValue, Runtime, ShapeId, Value, ValueKind, executor,
@@ -188,8 +189,11 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
             let expected_return = func.output_type.clone();
 
             // Create locals
-            for param in &params {
-                runtime.reserve_local(param.clone());
+            for i in 0..func.input_types.len() {
+                let param = params.get(i).unwrap();
+                let local = func.input_types.get(i).unwrap().local;
+                
+                runtime.reserve_local(local, param.clone());
             }
 
             match execute_statement(runtime, statement.clone())? {
@@ -200,11 +204,24 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
                     }
 
                     // Free locals
-                    runtime.clear_locals();
-                    //runtime.clear_locals(&params);
+                    for param in func.input_types {
+                        runtime.clear_local(param.local);
+                    }
 
                     Ok(Value::Single(value))
                 },
+                ExecFlow::Normal(span) => {
+                    if expected_return != ValueKind::None {
+                        return Err(RuntimeError::Error { span, message:format!("No value returned, expected {:?}", expected_return) });
+                    }
+
+                    // Free locals
+                    for param in func.input_types {
+                        runtime.clear_local(param.local);
+                    }
+
+                    Ok(Value::Empty)
+                }
                 _ => Err(RuntimeError::Error { span, message:format!("No value returned, expected {:?}", expected_return) }),
             }
         },
@@ -213,7 +230,10 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
             let output_type = evaluate_shape(runtime, output_type);
             let mut inputs = Vec::new();
             for input in input_types {
-                inputs.push(evaluate_shape(runtime, input));
+                let kind = evaluate_shape(runtime, input.shape);
+                let local = input.local;
+
+                inputs.push(FunctionParameter{kind, local});
             }
             
             let function = Function{ 
@@ -272,6 +292,7 @@ pub fn execute(runtime: &mut Runtime, ast: Vec<ResolvedStatement>) -> Result<Exe
     for statement in ast {
         match execute_statement(runtime, statement)? {
             ExecFlow::Normal(_) => {},
+            ExecFlow::Declare(_, _) => {},
             ExecFlow::Break(span) => {
                 return Err(RuntimeError::UnexpectedBreakout{span});
             },
@@ -295,6 +316,7 @@ pub enum ExecFlow {
     Break(Span),
     Continue(Span),
     Return(Span, Value),
+    Declare(Span, LocalId),
     Error{span:Span, message:String},
 }
 
@@ -326,6 +348,15 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
             }
 
             Ok(ExecFlow::Normal(span))
+        },
+
+        ResolvedStatement::DeclareLocal { span, symbol: Symbol::Local(info), value } => {
+            let id = info.id.clone();
+            let value = evaluate(runtime, value)?;
+
+            runtime.reserve_local(id, value);
+            
+            Ok(ExecFlow::Declare(span, id))
         },
 
         ResolvedStatement::DeclareObject { span, symbol: Symbol::Object(info), shape } => {
@@ -430,6 +461,7 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
                 if flag { 
                     match execute_statement(runtime, *statement.clone())? {
                         ExecFlow::Normal(_) => {},
+                        ExecFlow::Declare(_, local) => runtime.clear_local(local),
                         ExecFlow::Break(_) => break,
                         ExecFlow::Continue(_) => continue,
                         ExecFlow::Return(span, value) => return Ok(ExecFlow::Return(span, value)),
@@ -448,16 +480,17 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
             };
 
             for item in target {
-                runtime.reserve_local(*item);
+                runtime.reserve_local(local, *item);
 
                 match execute_statement(runtime, *statement.clone())? {
                     ExecFlow::Continue(_) => continue,
                     ExecFlow::Break(_) => break,
                     ExecFlow::Normal(_) => {},
+                    ExecFlow::Declare(_, local) => runtime.clear_local(local),
                     flow => return Ok(flow)
                 }
 
-                runtime.clear_locals();
+                runtime.clear_local(local);
             }
 
             Ok(ExecFlow::Normal(span))
@@ -465,12 +498,19 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
 
         ResolvedStatement::Block(statements) => {
             let mut last_span = Span{line: 0, column: 0};
+            let mut locals = Vec::new();
+
             for statement in statements{
                 match execute_statement(runtime, statement)? {
                     ExecFlow::Normal(span) => last_span = span,
-                    flow => return Ok(flow),
+                    ExecFlow::Declare(_, local) => locals.push(local),
+                    flow => { 
+                        runtime.clear_locals(locals);
+                        return Ok(flow);
+                    }
                 }
             }
+            runtime.clear_locals(locals);
             Ok(ExecFlow::Normal(last_span))
         }
 

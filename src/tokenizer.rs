@@ -6,14 +6,14 @@ use crate::Value;
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum Operator {
     Add, Sub, Mul, Div, Mod,
-    AddAssign, SubAssign, MulAssign, DivAssign, ModAssign,
+    AddAssign, SubAssign, MulAssign, DivAssign, ModAssign, AndAssign, OrAssign, XorAssign,
     Inc, Dec, Len,
     BWAnd, BWOr, BWXor, BWNot, BWShiftL, BWShiftR,
     Equal, NEqual, LT, GT, LTE, GTE, 
     Not, And, Or,
     Range, RangeLT, At, Hash,
     Dot, Colon, DColon, Question, DQuestion,
-    Assign, Attach, Detach, Arrow,
+    Assign, Attach, Detach, Arrow, FatArrow,
     IsShape, NIsShape
 }
 
@@ -31,7 +31,7 @@ impl Operator {
         match self {
             Operator::Add | Operator::Mul | Operator::Div | Operator::Sub | Operator::Mod |
             Operator::BWAnd | Operator::BWOr | Operator::BWXor | Operator::BWNot | Operator::BWShiftL | Operator::BWShiftR |
-            Operator::Inc | Operator::Dec
+            Operator::Inc | Operator::Dec | Operator::Len
                 => ValueKind::Int32,
                 
             Operator::Equal | Operator::NEqual | Operator::And | Operator::Or | Operator::Not |
@@ -51,7 +51,8 @@ impl Operator {
 pub enum Keyword {
     Using,
     Shape, Let,
-    Static, Func, Sealed, PSelf,
+    Static, Sealed, Const,
+    Func, PSelf, 
     If, Else, Switch,
     While, For, In,
     Break, Return, Continue, Throw,
@@ -201,6 +202,7 @@ pub fn tokenize(input: &str) -> Vec<Token> {
                     "func" => TokenKind::Keyword(Keyword::Func),
                     "self" => TokenKind::Keyword(Keyword::PSelf),
                     "sealed" => TokenKind::Keyword(Keyword::Sealed),
+                    "const" => TokenKind::Keyword(Keyword::Const),
                     "if" => TokenKind::Keyword(Keyword::If),
                     "else" => TokenKind::Keyword(Keyword::Else),
                     "switch" => TokenKind::Keyword(Keyword::Switch),
@@ -212,7 +214,10 @@ pub fn tokenize(input: &str) -> Vec<Token> {
                     "continue" => TokenKind::Keyword(Keyword::Continue),
                     "throw" => TokenKind::Keyword(Keyword::Throw),
                     "print" => TokenKind::Keyword(Keyword::Print),
+
                     "len" => TokenKind::Operator(Operator::Len),
+                    "and" => TokenKind::Operator(Operator::And),
+                    "or" => TokenKind::Operator(Operator::Or),
 
                     "int32" => TokenKind::Type(ValueKind::Int32),
                     "bool" => TokenKind::Type(ValueKind::Bool),
@@ -290,6 +295,7 @@ pub fn tokenize(input: &str) -> Vec<Token> {
                     ":=" => Operator::Attach,
                     "=:" => Operator::Detach,
                     "->" => Operator::Arrow,
+                    "=>" => Operator::FatArrow,
 
                     "==" => Operator::Equal,
                     "!=" => Operator::NEqual,
@@ -311,6 +317,10 @@ pub fn tokenize(input: &str) -> Vec<Token> {
                     "~" => Operator::BWNot,
                     "<<" => Operator::BWShiftL,
                     ">>" => Operator::BWShiftR,
+                    
+                    "&=" => Operator::AndAssign,
+                    "|=" => Operator::OrAssign,
+                    "^=" => Operator::XorAssign,
 
                     "..." => Operator::Range,
                     "..<" => Operator::RangeLT,

@@ -144,6 +144,19 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
                 (left, op, right) => Err(RuntimeError::Error{ span, message: format!("Invalid operation: {:?} {:?} {:?}", left, op, right) })
             }
         },
+
+        ResolvedExpression::Ternary { span, condition, true_expr, else_expr  } => {
+            let condition = evaluate(runtime, *condition)?;
+            if condition.kind() != ValueKind::Bool {
+                return Err(RuntimeError::TypeMismatch { span, found: condition, expected: ValueKind::Bool })
+            }
+
+            if condition == Value::Single(PrimitiveValue::Bool(true)) {
+                Ok(evaluate(runtime,*true_expr)?)
+            } else {
+                Ok(evaluate(runtime,*else_expr)?)
+            }
+        }
         
         ResolvedExpression::MemberAccess{ span, target, member} => {
             match (evaluate(runtime, *target)?, member) {
@@ -276,6 +289,7 @@ pub fn evaluate_place(runtime: &mut Runtime, expression:ResolvedExpression) -> R
             }
             
         },
+        ResolvedExpression::Variable(_, Symbol::Local(k)) => Ok(Value::Single(PrimitiveValue::Local(k.id, runtime.get_local(k.id).kind()))),
         other => evaluate(runtime, other), 
     }
 }
@@ -428,6 +442,9 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
                 }
                 Value::Single(PrimitiveValue::ArrayElement(obj, az, kind, i)) => {
                     runtime.set_slot_value_array_element(obj, az, i, val);
+                }
+                Value::Single(PrimitiveValue::Local(loc, kind)) => {
+                    runtime.reserve_local(loc, val);
                 }
                 other => return Err(RuntimeError::Error{span, message:format!("Could not assign {:?} to {:?}", val, other)}),
             }

@@ -23,6 +23,7 @@ pub enum ValueKind {
     Azimuth(Box<ValueKind>),
     Option(Box<ValueKind>),
     Object(ObjectId, Box<ValueKind>),
+    Local(LocalId, Box<ValueKind>),
     Pointer(ObjectId, AzimuthId, Box<ValueKind>),
     ArrayElement(Box<ValueKind>),
     Function(Box<FunctionInfo>),
@@ -50,6 +51,7 @@ impl ValueKind {
             },
             ValueKind::Option(k) => k.is_assignable_from(other),
             ValueKind::Object(_, k) => k.is_assignable_from(other),
+            ValueKind::Local(_, k) => k.is_assignable_from(other),
             ValueKind::Pointer(_, _, k) => k.is_assignable_from(other),
             ValueKind::ArrayElement(k) => k.is_assignable_from(other),
             ValueKind::Function(info) => other == ValueKind::Function(info.clone()),
@@ -71,6 +73,7 @@ pub enum PrimitiveValue {
     //ObjectId(ShapeInstance, ObjectId),
     Azimuth(AzimuthState),
     Object(ObjectId, ValueKind),
+    Local(LocalId, ValueKind),
     Pointer(ObjectId, AzimuthId, ValueKind),
     ArrayElement(ObjectId, AzimuthId, ValueKind, usize),
     Function(Box<Function>),
@@ -89,6 +92,7 @@ impl PrimitiveValue {
             //PrimitiveValue::ObjectId(shape_id, _) => ValueKind::Shape(shape_id.clone()),
             PrimitiveValue::Azimuth(s) => ValueKind::Azimuth(Box::new(s.value_type.clone())),
             PrimitiveValue::Object(_, kind) => kind.clone(),
+            PrimitiveValue::Local(_, kind) => kind.clone(),
             PrimitiveValue::Pointer(_, _, kind) => kind.clone(),
             PrimitiveValue::ArrayElement(_, _, kind, _) => kind.clone(),
             PrimitiveValue::Function(func) => 
@@ -237,6 +241,7 @@ pub struct Shape {
     azimuths: Vec<AzimuthId>,
     def_mappings: HashMap<AzimuthId, AzimuthId>,
     static_object_id: ObjectId,
+    parent_ids: Vec<u32>,
 }
 
 impl Shape {
@@ -408,11 +413,22 @@ impl Runtime {
             _ => 0,   
         };
 
+        let mut def_mappings = HashMap::new();
+        for mapping in info.mappings {
+            match (mapping.to, mapping.from) {
+                (Symbol::Azimuth(to), Symbol::Azimuth(from)) => {
+                    def_mappings.insert(to.id, from.id);
+                }
+                _ => panic!("mappings not azimuth symbols")
+            }
+        }
+
         let shape = Shape {
             id: info.id,
             name: info.name,
             azimuths: info.azimuths,
-            def_mappings: HashMap::new(),
+            def_mappings,
+            parent_ids: info.parent_ids,
             static_object_id: static_object_id,
             num_generics: info.generics.len() as u32,
         };
@@ -558,17 +574,21 @@ impl Runtime {
     }
 
     fn attach_shape(&mut self, object_id: ObjectId, shape_id: ShapeInstance) {
-        let (shape_name, azimuths, num_generics) = {
+        let (shape_name, azimuths, parents, num_generics) = {
             let shape = self.get_shape(shape_id.id);
 
             if shape.num_generics != (shape_id.generics.len() as u32) {
                 panic!("Invalid number of generic arguments: {:?}", shape_id.generics);
             }
 
-            (shape.name.clone(), shape.azimuths.clone(), shape.num_generics)
+            (shape.name.clone(), shape.azimuths.clone(), shape.parent_ids.clone(), shape.num_generics)
         };
 
         println!("Attaching shape {} to object {}", shape_name, object_id);
+
+        for parent in parents{
+            self.attach_shape(object_id, ShapeInstance{ id:parent, generics:Vec::new() });
+        }
 
         for id in azimuths {
             let azimuth = self.get_azimuth(id);
@@ -599,20 +619,24 @@ impl Runtime {
     }
 
     fn attach_shape_with_remap(&mut self, object_id: ObjectId, shape_id: ShapeInstance, remap: Vec<Mapping>,) {
-        let (shape_name, azimuths, num_generics) = {
+        let (shape_name, azimuths, parents, num_generics) = {
             let shape = self.get_shape(shape_id.id);
 
             if shape.num_generics != (shape_id.generics.len() as u32) {
                 panic!("Invalid number of generic arguments: {:?}", shape_id.generics);
             }
 
-            (shape.name.clone(), shape.azimuths.clone(), shape.num_generics)
+            (shape.name.clone(), shape.azimuths.clone(), shape.parent_ids.clone(), shape.num_generics)
         };
 
         println!(
             "Attaching shape {} to object {} with remapping",
             shape_name, object_id
         );
+
+        for parent in parents{
+            self.attach_shape(object_id, ShapeInstance{ id:parent, generics:Vec::new() });
+        }
 
         for az_id in azimuths {
             let azimuth = self.get_azimuth(az_id);
@@ -660,14 +684,17 @@ impl Runtime {
     }
 
     fn get_local(&self, id: LocalId) -> &Value {
+        //println!("searching for local {}...", id);
         self.locals.get(&id).expect("local not found")
     }
 
     fn reserve_local(&mut self, id: LocalId, value:Value) {
+        //println!("reserving local {} to {:?}...", id, value);
         self.locals.insert(id, value);
     }
 
     fn clear_local(&mut self, id: LocalId) {
+        //println!("clearing local {}...", id);
         self.locals.remove(&id);
     }
 

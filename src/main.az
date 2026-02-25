@@ -33,6 +33,10 @@ shape Named {
     Name string
 }
 
+shape NamedChild : Named ( Name -> Goofers ) {
+    Goofers string
+}
+
 shape Arrayed {
     List int32[]
 }
@@ -64,10 +68,10 @@ print firstThing
 firstThing =: Named
 print firstThing
 
-firstThing := Box {
+firstThing := Box (
     Width -> X
     Height -> Y
-}
+)
 print firstThing
 
 firstThing.Width = 20
@@ -144,6 +148,8 @@ let thirdThing := Arrayed
 thirdThing.List = [5, 2, 61]
 print thirdThing
 
+print (6 < 5) ? "gooble" : "bleeble"
+
 thirdThing.List[2] = Box.Bleedle(5, 5)
 print thirdThing
 
@@ -152,6 +158,12 @@ for i in 0 ..< 10 {
 }
 
 print len 0 ... 2
+
+print Math.Pow(5, 2)
+
+thirdThing := NamedChild
+thirdThing.Name = "Billy"
+print thirdThing
 
 //print secondThing.PrintSomething()
 

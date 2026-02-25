@@ -1,5 +1,5 @@
 use crate::executor::OBJECT_INSTANCE;
-use crate::tokenizer::{self, Keyword, Operator, Span, Token, TokenKind};
+use crate::tokenizer::{self, Keyword, Operator, Span, Token, TokenKind, UNARY_OPERATORS};
 use crate::{Function, FunctionInfo, PrimitiveValue};
 use crate::Value;
 use crate::ValueKind;
@@ -50,6 +50,12 @@ pub enum Expression {
         left: Box<Expression>,
         operator: Operator,
         right: Box<Expression>,
+    },
+    Ternary {
+        span: Span,
+        condition: Box<Expression>,
+        true_expr: Box<Expression>,
+        else_expr: Box<Expression>,
     },
     MemberAccess {
         span: Span,
@@ -123,6 +129,7 @@ pub enum Statement {
         span: Span, 
         name: Identifier, 
         slot_ids: Vec<RawAzimuth>,
+        parents: Vec<Identifier>,
         mappings: Vec<Mapping>,
         generics: Vec<ShapeExpression>,
     },
@@ -168,7 +175,7 @@ fn parse_expression(tokens: &mut PeekableTokens) -> Result<Expression, ParseErro
 
     let mut expr = match token.kind {
         // Unary preceding operator
-        TokenKind::Operator(operator) => {
+        TokenKind::Operator(operator) if UNARY_OPERATORS.contains(&operator) => {
             let expr = parse_expression(tokens)?;
             Expression::UnaryOp{span, operator, operand: Box::new(expr)}
         } 
@@ -263,16 +270,6 @@ fn parse_expression(tokens: &mut PeekableTokens) -> Result<Expression, ParseErro
         }
     }
 
-    // Check for option
-    if let Some(token) = tokens.peek() {
-        let span = token.span.clone();
-        if matches!(&token.kind, TokenKind::Operator(Operator::Question))
-        {
-            tokens.next(); // consume question mark
-            expr = Expression::Option(span, Box::new(Some(expr)));
-        }
-    }
-
     // Check for operators
     if let Some(token) = tokens.peek() {
         let span = token.span.clone();
@@ -286,6 +283,29 @@ fn parse_expression(tokens: &mut PeekableTokens) -> Result<Expression, ParseErro
                     right: Box::new(parse_expression(tokens)?),
                 });
             }
+        }
+    }
+
+    // Check for ternary
+    if let Some(token) = tokens.peek() {
+        let span = token.span.clone();
+        if matches!(&token.kind, TokenKind::Operator(Operator::Question))
+        {
+            tokens.next(); // consume question mark
+            
+            let true_expr = parse_expression(tokens)?;
+
+            // Expect colon
+            let token = tokens.peek().unwrap();
+            if !matches!(token.kind, TokenKind::Operator(Operator::Colon)) {
+                let span = token.span.clone();
+                return Err(ParseError::IncorrectToken { span, token:token.kind.clone(), expected: format!(":"), loc: format!("Ternary operation") });
+            }
+            tokens.next(); // Consume colon
+            
+            let else_expr = parse_expression(tokens)?;
+
+            expr = Expression::Ternary{ span, condition:Box::new(expr), true_expr:Box::new(true_expr), else_expr:Box::new(else_expr)}
         }
     }
 
@@ -404,7 +424,7 @@ fn parse_object_statement(span:Span, tokens: &mut PeekableTokens) -> Result<Stat
             let shape = parse_shape_expression(tokens)?;
 
             // Check for mappings
-            if let TokenKind::LeftBrace = tokens.peek().unwrap().kind {
+            if let TokenKind::LeftParen = tokens.peek().unwrap().kind {
                 tokens.next(); // consume '{'
                 let mut mappings = Vec::new();
 
@@ -427,7 +447,7 @@ fn parse_object_statement(span:Span, tokens: &mut PeekableTokens) -> Result<Stat
                                 token => return Err(ParseError::IncorrectToken { span, token:token.kind, expected:format!("->"), loc:format!("shape attachment remap value") }),
                             }
                         },
-                        TokenKind::RightBrace => break,
+                        TokenKind::RightParen => break,
                         token => return Err(ParseError::UnexpectedToken { span, token, loc:format!("shape attachment remap") }),
                     }
                 }
@@ -533,9 +553,6 @@ fn parse_statement(tokens: &mut PeekableTokens) -> Result<Statement, ParseError>
                 token => return Err(ParseError::UnexpectedToken { span, token, loc:format!("shape declaration") }),
             };
 
-            let mut slot_ids = Vec::new();
-            let mut mappings = Vec::new();
-
             let mut generics = Vec::new();
             //let mut generic_names = Vec::new();
 
@@ -558,6 +575,59 @@ fn parse_statement(tokens: &mut PeekableTokens) -> Result<Statement, ParseError>
                     }
                 }
             }
+            
+            // Establish inheritance
+            let mut mappings = Vec::new();
+            let mut parents = Vec::new();
+            
+            let token = tokens.peek().unwrap();
+            if let TokenKind::Operator(Operator::Colon) = token.kind {
+                tokens.next(); // Consume colon
+
+                while let Some(token) = tokens.peek() {
+                    let span = token.span.clone();
+
+                    match &token.kind {
+                        TokenKind::Comma => { tokens.next(); }
+                        TokenKind::Identifier(parent) => {
+                            parents.push(parent.clone());
+                            tokens.next();
+
+                            // Check for mappings
+                            if let TokenKind::LeftParen = tokens.peek().unwrap().kind {
+                                tokens.next(); // consume '{'
+
+                                while let Some(token) = tokens.next() {
+                                    match token.kind {
+                                        // From slot mapping
+                                        TokenKind::Identifier(from_slot) => {
+
+                                            // Expect '->' operator
+                                            let token = tokens.next().unwrap();
+                                            if !matches!(token.kind, TokenKind::Operator(Operator::Arrow)) {
+                                                return Err(ParseError::IncorrectToken { span, token:token.kind, expected:format!("->"), loc:format!("shape inheritance remap value") })
+                                            }
+                                            
+                                            // Expect to slot identifier
+                                            match tokens.next().unwrap().kind {
+                                                TokenKind::Identifier(to_slot) => mappings.push(Mapping { from_slot, to_slot }),
+                                                token => return Err(ParseError::IncorrectToken { span, token, expected:format!("Slot"), loc:format!("shape inheritance remap value") }),
+                                            }
+                                        },
+                                        TokenKind::RightParen => break,
+                                        token => return Err(ParseError::UnexpectedToken { span, token, loc:format!("shape inheritance remap") }),
+                                    }
+                                }
+                            }
+                        },
+                        _ => break,
+                    }
+                }
+
+            }
+
+            // Define slots
+            let mut slot_ids = Vec::new();
 
             let token = tokens.next().unwrap();
             if let TokenKind::LeftBrace = token.kind {
@@ -638,7 +708,7 @@ fn parse_statement(tokens: &mut PeekableTokens) -> Result<Statement, ParseError>
                 return Err(ParseError::IncorrectToken{span, token:token.kind, expected:format!("{{"), loc:format!("shape declaration")});
             }
 
-            Ok(Statement::DeclareShape { span, name: shape_identifier, slot_ids, mappings, generics })
+            Ok(Statement::DeclareShape { span, name: shape_identifier, slot_ids, parents, mappings, generics })
         },
 
         // Object declaration

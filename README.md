@@ -1,1 +1,286 @@
 # Azimuth
+
+The azimuth coding language is different from object oriented programming, where objects conform to a single type with known variables.
+Instead, each object can conform to any number of classes, with its variables mapped from the other classes it conforms to.
+This prioritizes dynamic capabilities and graph-like data structures while still allowing for type safety and speed.
+
+## Structure
+
+Instead of structs or classes, capabilities are defined through shapes. Shapes are like a template that can be applied upon an object.
+Each shape has a number of default mappings, functions, and slots which act as variables. These are all referenced by an azimuth, a structure that contains information and a unique id. Multiple azimuths can point to the same values in memory based on the object's unique mapping. Shapes can be attached to an object with or without a mapping, and any non-mapped values are allocated from memory. Shapes can similarly be detached at runtime, which removes the mappings to those values, but the values will not be deallocated until all mappings are detached.
+
+## Syntax
+
+### Statements
+
+The azimuth language features similar syntax to Rust, Swift, and other modern languages, with several notable differences. All statements can be contained in blocks or not, and all expressions can be contained in parenthesis or not: it is up to the developer when clarity is more important than space. Semicolons are not mandatory, whitespace is not significant, and braces are only required where nested statements would become ambiguous.
+
+Long chains of consecutive statements are valid:
+
+    if x == y print "true" else print "false"
+
+...and maximally verbose statements are valid:
+
+    if (x == y) {
+        print "true";
+    } else {
+        print "false";
+    }
+
+The recommended design is one that prioritizes simplicity above all else, with expressions contained in the minimum amount of parenthesis and statements on new lines following their conditions:
+
+    if x == y
+        print "true"
+    else print "false"
+
+Braces are required for multiple lines
+
+    if x == y {
+        print "true"
+        print "still true"
+        print "hello world"
+    } else print "false"
+
+For loops and while loops function how you would expect
+
+    for i in 0 ... 10 {
+        print i
+        print x[i]
+    }
+
+    while x <= y {
+        print x
+        x += 1
+    }
+
+    loop {
+        x += 1
+
+        if x > y 
+            break
+    }
+
+### Expressions
+
+Array indexing is done with brackets.
+
+    print x[i]
+    x[i + 1] = 5
+
+### Operators
+
+Every arithmatic operator is here!
+
+    -x
+    x + y
+    x - y
+    x * y
+    x / y
+    x % y
+    x += y
+    x -= y
+    x *= y
+    x /= y
+    x %= y
+
+    ~x
+    x & y
+    x | y
+    x ^ y
+    x << y
+    x >> y
+    x &= y
+    x |= y
+    x ^= y
+    x <<= y
+    x >>= y
+
+Comparisons are also routine
+
+    x and y
+    x && y
+    x or y
+    x || y
+    !x
+
+    x == y
+    x != y
+    x < y
+    x > y
+    x <= y
+    x >= y
+
+Ranges are defined with elipses, "..." for end inclusive and "..<" for end exclusive
+
+    x ... y
+    x ..< y
+
+Ternaries are also supported
+
+    print x == y ? someThing : someThingElse
+
+### Shapes
+
+Shapes are defined anywhere within a file and contain a number of azimuth and function definitions.
+
+Shapes are defined as follows:
+
+    shape Foo {
+    
+        Bar int32
+
+        Baz string
+
+        Qux(self) print "hello world"
+    
+    }
+
+Shapes can inherit from other shapes by listing their names after its own, following a colon:
+
+    shape ChildOfFoo : Foo {
+
+        PrintFoo(self) -> int32 {
+            print "foo"
+            return 0
+        }
+
+    }
+
+Any object that is attached ChildOfFoo will also be attached Foo first, with all its values remapped according to the default provided mapping:
+
+    shape ChildOfFoo : Foo(X -> Bar) {
+
+        X int32 = 0
+
+    }
+
+Azimuths can be locked, which makes it impossible to detach them even if the shape is detached. They can also be declared static, which applies them to the shape's static singleton and accessed through the shape name directly. They can also be declared const, which makes their value immutable
+
+    shape Foo {
+
+        GlobalCount static int32 = 0
+
+        Count locked int32 = 0
+
+        MaxCount const int32 = 100
+
+    }
+
+The "attach" and "detach" keywords are special functions called on an object when it is attached and detached. Constants are mutable in these functions.
+
+    shape Foo {
+
+        MaxCount const int32
+
+        attach(self) {
+            self.MaxCount = 100
+        }
+
+        detach(self) {
+            print "detached"
+        }
+
+    }
+
+These can be given additional parameters which are required to attach the shape
+
+    shape Foo {
+
+        MaxCount const int32
+
+        attach(self, maxCount int32) {
+            self.MaxCount = maxCount
+        }
+
+    }
+
+    let obj := Foo(
+        maxCount = 5
+    )
+
+Functions and azimuths can also be abstract, which must be remapped from the object when they are attached
+
+    shape Foo {
+        Data abstract int32[]
+    }
+
+    let obj := List<int32>
+    obj := Foo(
+        Data -> List::Array
+    )
+
+### Objects
+
+Objects are declared using the "let" keyword. These override names in the scope and persist through references.
+
+    let foo
+
+Shapes can be attached to objects by using the ":=" attachment operator:
+
+    let foo := SomeShape
+
+    foo := SomeOtherShape
+
+These can also be attached with mappings by using parenthesis and arrows for each azimuth mapping:
+
+    foo := Vector2 (
+        X -> Width
+        Y -> Height
+    )
+
+Similarly shapes can be detached by using the "=:" detachment operator:
+
+    foo =: SomeShape
+
+To access the variables of an object, use a "." dot operator followed by the name of the azimuth that points to it:
+
+    print foo.Name
+
+There are times when there are identifiers with the same name on an object. This will cause a runtime error if there are multiple with the same name when it is called. In case of ambiguous names, the shape name can also be provided as a clarifier. This also allows lensing from specific inheritance layers.
+
+    print foo::Named.Name
+
+Multiple functions can be assigned to the same azimuth using the keywords "before" and "after" which will cause them to execute in a chain. This is how super/base overrides work, but also how you can attach additional functionality onto single functions.
+
+    x := Printable
+    x := Testing (
+        Benchmark -> before Printable::Print
+    )
+
+You can also "hijack" functions by attaching shapes to them directly
+
+    x := Printable
+    x.Print := Benchmark (
+        Start -> before Execute
+        Stop -> after Execute
+    )
+
+To change the mapping, simply attach again. Unmodified mappings will be ignored, and the modified mappings will be moved.
+
+    x := Vector2 (
+        X -> Width
+        Y -> Height
+    )
+
+    x := Vector2 (
+        X -> Height
+        Y -> Width
+    )
+
+Objects can be sealed using the "seal" keyword to prevent any additional attachments or detachments. This is important for safety or critical operations. Modified objects will need to be an unsealed copy. Attempting to attach or detach to the object will cause a runtime error. Sealing an array also seals every member of the array.
+
+    let user := UserData
+    seal user
+
+    user := DataStealer
+    // Runtime error
+
+Objects can be tested for shape compatability using the "=~" is shape and "!~" isn't shape operators. These will compare whether an object meets the minimum mappings for a certain shape. This is strict to mappings based on the default mappings of the shape, but azimuths without default mappings could pull from anywhere.
+
+    let x
+    print x =~ Vector2
+    // prints "false"
+
+    x := Vector2
+    print x =~ Vector2
+    // prints "true"

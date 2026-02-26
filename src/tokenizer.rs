@@ -6,12 +6,14 @@ use crate::Value;
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum Operator {
     Add, Sub, Mul, Div, Mod,
-    AddAssign, SubAssign, MulAssign, DivAssign, ModAssign, AndAssign, OrAssign, XorAssign,
+    AddAssign, SubAssign, MulAssign, DivAssign, ModAssign, 
+    AndAssign, OrAssign, XorAssign, ShiftLAssign, ShiftRAssign,
     Inc, Dec, Len,
     BWAnd, BWOr, BWXor, BWNot, BWShiftL, BWShiftR,
     Equal, NEqual, LT, GT, LTE, GTE, 
     Not, And, Or,
-    Range, RangeLT, At, Hash,
+    Range, RangeLT, 
+    At, Hash, Dollar,
     Dot, Colon, DColon, Question, DQuestion,
     Assign, Attach, Detach, Arrow, FatArrow,
     IsShape, NIsShape
@@ -51,10 +53,11 @@ impl Operator {
 pub enum Keyword {
     Using,
     Shape, Let,
-    Static, Sealed, Const,
+    Static, Seal, Locked, Const,
+    Before, After, Next,
     Func, PSelf, 
     If, Else, Switch,
-    While, For, In,
+    While, Loop, For, In,
     Break, Return, Continue, Throw,
     Print,
 }
@@ -201,12 +204,16 @@ pub fn tokenize(input: &str) -> Vec<Token> {
                     "static" => TokenKind::Keyword(Keyword::Static),
                     "func" => TokenKind::Keyword(Keyword::Func),
                     "self" => TokenKind::Keyword(Keyword::PSelf),
-                    "sealed" => TokenKind::Keyword(Keyword::Sealed),
+                    "seal" => TokenKind::Keyword(Keyword::Seal),
+                    "locked" => TokenKind::Keyword(Keyword::Locked),
                     "const" => TokenKind::Keyword(Keyword::Const),
+                    "before" => TokenKind::Keyword(Keyword::Before),
+                    "after" => TokenKind::Keyword(Keyword::After),
                     "if" => TokenKind::Keyword(Keyword::If),
                     "else" => TokenKind::Keyword(Keyword::Else),
                     "switch" => TokenKind::Keyword(Keyword::Switch),
                     "while" => TokenKind::Keyword(Keyword::While),
+                    "loop" => TokenKind::Keyword(Keyword::Loop),
                     "for" => TokenKind::Keyword(Keyword::For),
                     "in" => TokenKind::Keyword(Keyword::In),
                     "break" => TokenKind::Keyword(Keyword::Break),
@@ -288,6 +295,19 @@ pub fn tokenize(input: &str) -> Vec<Token> {
                     "*=" => Operator::MulAssign,
                     "%=" => Operator::ModAssign,
 
+                    "&" => Operator::BWAnd,
+                    "|" => Operator::BWOr,
+                    "^" => Operator::BWXor,
+                    "~" => Operator::BWNot,
+                    "<<" => Operator::BWShiftL,
+                    ">>" => Operator::BWShiftR,
+                     
+                    "&=" => Operator::AndAssign,
+                    "|=" => Operator::OrAssign,
+                    "^=" => Operator::XorAssign,
+                    "<<=" => Operator::ShiftLAssign,
+                    ">>=" => Operator::ShiftRAssign,
+
                     "++" => Operator::Inc,
                     "--" => Operator::Dec,
 
@@ -311,21 +331,11 @@ pub fn tokenize(input: &str) -> Vec<Token> {
                     "=~" => Operator::IsShape,
                     "!~" => Operator::NIsShape,
 
-                    "&" => Operator::BWAnd,
-                    "|" => Operator::BWOr,
-                    "^" => Operator::BWXor,
-                    "~" => Operator::BWNot,
-                    "<<" => Operator::BWShiftL,
-                    ">>" => Operator::BWShiftR,
-                    
-                    "&=" => Operator::AndAssign,
-                    "|=" => Operator::OrAssign,
-                    "^=" => Operator::XorAssign,
-
                     "..." => Operator::Range,
                     "..<" => Operator::RangeLT,
                     "@" => Operator::At,
                     "#" => Operator::Hash,
+                    "$" => Operator::Dollar,
 
                     "." => Operator::Dot,
                     ":" => Operator::Colon,

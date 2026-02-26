@@ -144,6 +144,7 @@ pub enum ResolvedStatement {
     AddMapping { span: Span, object: ResolvedExpression, mapping: ResolvedMapping },
     AttachWithRemap { span: Span, object: ResolvedExpression, shape: ResolvedShapeExpression, mappings: Vec<ResolvedMapping>, },
     Print { span: Span, expr: ResolvedExpression },
+    Expression { span: Span, expr: ResolvedExpression },
     If {
         span: Span, 
         condition: ResolvedExpression,
@@ -642,13 +643,20 @@ impl Analyzer {
                 Ok(ResolvedExpression::Ternary{span, condition:Box::new(condition), true_expr:Box::new(true_expr), else_expr:Box::new(else_expr)})
             }
 
-            Expression::MemberAccess{ span, target, member} => {
+            Expression::MemberAccess{ span, target, qualifier, member} => {
                 let target = self.resolve_expression(*target, scope)?;
+                let qualifier = match qualifier {
+                    Some(shape_expr) => Some(self.resolve_shape_expression(shape_expr, scope)?),
+                    None => None
+                };
+
                 if let Some(member) = self.get_symbol(scope, member.clone()) {
+
                     Ok(ResolvedExpression::MemberAccess{span, 
                         target:Box::new(target),
                         member:member.clone()
-                        })
+                    })
+
                 } else {
                     Err(CompileError::UndefinedSymbol { span, name: member })
                 }
@@ -779,6 +787,7 @@ impl Analyzer {
 
     pub fn resolve_statement(&mut self, statement:Statement, scope:ScopeId) -> Result<ResolvedStatement,CompileError> {
         match statement {
+            Statement::Expression {span, expr} => Ok(ResolvedStatement::Expression{span, expr:self.resolve_expression(expr, scope)?}),
             Statement::Using { span, package } => {
                 if let Ok(source) = fs::read_to_string(format!("/workspaces/SlotBox/src/{}.az", package)) {
                     let tokens = tokenizer::tokenize(&source);

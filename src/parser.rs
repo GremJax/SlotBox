@@ -60,6 +60,7 @@ pub enum Expression {
     MemberAccess {
         span: Span,
         target: Box<Expression>,
+        qualifier: Option<ShapeExpression>,
         member: Identifier,
     },
     ArrayAccess {
@@ -140,6 +141,7 @@ pub enum Statement {
     AddMapping { span: Span, object: Expression, mapping: Mapping },
     AttachWithRemap { span: Span, object: Expression, shape: ShapeExpression, mappings: Vec<Mapping> },
     Print { span: Span, expr: Expression },
+    Expression { span: Span, expr: Expression },
     If {
         span: Span, 
         condition: Expression,
@@ -218,19 +220,25 @@ fn parse_expression(tokens: &mut PeekableTokens) -> Result<Expression, ParseErro
     };
 
     let mut caller;
+    let mut qualifier = None;
 
     // Check for member access / function call / array index
     while let Some(token) = tokens.peek() {
         let span = token.span.clone();
 
         match token.kind {
+            TokenKind::Operator(Operator::DColon) => {
+                tokens.next(); // Consume dcolon
+                qualifier = Some(parse_shape_expression(tokens)?);
+            }
             TokenKind::Operator(Operator::Dot) => {
                 tokens.next(); // Consume dot
 
                 if let TokenKind::Identifier(k) = tokens.next().unwrap().kind {
                     // Access Member
                     caller = expr.clone();
-                    expr = Expression::MemberAccess{span,  target: Box::new(expr), member: k };
+                    expr = Expression::MemberAccess{span, target: Box::new(expr), qualifier:qualifier.clone(), member: k };
+                    qualifier = None;
 
                     // Check for function call
                     if matches!(tokens.peek().unwrap().kind, TokenKind::LeftParen){
@@ -513,6 +521,16 @@ fn parse_object_statement(span:Span, tokens: &mut PeekableTokens) -> Result<Stat
             let value = parse_expression(tokens)?;
             Ok(Statement::AssignAugmented{ span, target: object, value, operator:Operator::BWXor })
         }
+        TokenKind::Operator(Operator::ShiftLAssign) => {
+            tokens.next(); // consume operator
+            let value = parse_expression(tokens)?;
+            Ok(Statement::AssignAugmented{ span, target: object, value, operator:Operator::BWShiftL })
+        }
+        TokenKind::Operator(Operator::ShiftRAssign) => {
+            tokens.next(); // consume operator
+            let value = parse_expression(tokens)?;
+            Ok(Statement::AssignAugmented{ span, target: object, value, operator:Operator::BWShiftR })
+        }
         TokenKind::Operator(Operator::Inc) => {
             tokens.next(); // consume operator
             let one = Expression::Value(span.clone(), Value::Single(PrimitiveValue::Int32(1)));
@@ -524,7 +542,9 @@ fn parse_object_statement(span:Span, tokens: &mut PeekableTokens) -> Result<Stat
             Ok(Statement::AssignAugmented{ span, target: object, value:one, operator:Operator::Add })
         }
 
-        token => return Err(ParseError::UnexpectedToken { span, token:token.clone(), loc:format!("object operation") }),
+        _ => Ok(Statement::Expression{span, expr:object })
+
+        //token => return Err(ParseError::UnexpectedToken { span, token:token.clone(), loc:format!("object operation") }),
     }
 }
 
@@ -794,6 +814,16 @@ fn parse_statement(tokens: &mut PeekableTokens) -> Result<Statement, ParseError>
             tokens.next(); // Consume while
 
             let condition = parse_expression(tokens)?;
+            let statement = parse_statement(tokens)?;
+
+            Ok(Statement::While{span, condition, statement: Box::new(statement) })
+        },
+
+        // Loop (while true)
+        TokenKind::Keyword(Keyword::Loop) => {
+            tokens.next(); // Consume loop
+
+            let condition = Expression::Value(span.clone(), Value::Single(PrimitiveValue::Bool(true)));
             let statement = parse_statement(tokens)?;
 
             Ok(Statement::While{span, condition, statement: Box::new(statement) })

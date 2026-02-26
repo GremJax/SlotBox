@@ -10,9 +10,9 @@ shape Box {
         return self.Width * self.Height
     }
 
-    // PrintSomething(self) {
-    //    print "hello"
-    //}
+    PrintSomething(self) {
+        print "hello"
+    }
 
     Bibble(self, int32 multiplier) -> int32 {
         return self.Width * multiplier
@@ -165,6 +165,6 @@ thirdThing := NamedChild
 thirdThing.Name = "Billy"
 print thirdThing
 
-//print secondThing.PrintSomething()
+secondThing.PrintSomething()
 
 print "Program successfully executed!"

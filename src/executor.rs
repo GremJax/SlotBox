@@ -340,7 +340,10 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
             executor::execute(runtime, ast)?;
             Ok(ExecFlow::Normal(span))
         },
-
+        ResolvedStatement::Expression { span, expr } => { 
+            evaluate(runtime, expr)?;
+            Ok(ExecFlow::Normal(span))
+        },
         ResolvedStatement::Print { span, expr } => {
             match evaluate(runtime, expr)? {
                 Value::Single(PrimitiveValue::String(k)) => println!("{}", k),

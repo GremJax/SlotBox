@@ -4,51 +4,62 @@ shape Object {}
 
 shape Math {
     
-    Add(int32 a, int32 b) -> int32 
+    static Add(int32 a, int32 b) -> int32 
         return a + b
-    Sub(int32 a, int32 b) -> int32 
+    static Sub(int32 a, int32 b) -> int32 
         return a - b
-    Mul(int32 a, int32 b) -> int32 
+    static Mul(int32 a, int32 b) -> int32 
         return a * b
-    Div(int32 a, int32 b) -> int32 
+    static Div(int32 a, int32 b) -> int32 
         return a / b
-    Mod(int32 a, int32 b) -> int32 
+    static Mod(int32 a, int32 b) -> int32 
         return a % b
 
-    Abs(int32 x) -> int32 
+    static Abs(int32 x) -> int32 
         return (x > 0) ? x : -x
-    Max(int32 a, int32 b) -> int32 
+    static Max(int32 a, int32 b) -> int32 
         return (a >= b) ? a : b
-    Min(int32 a, int32 b) -> int32 
+    static Min(int32 a, int32 b) -> int32 
         return (a <= b) ? a : b
-    Clamp(int32 x, int32 min, int32 max) -> int32 
+    static Clamp(int32 x, int32 min, int32 max) -> int32 
         return Math.Max(min, Math.Min(max, x))
-    Sign(int32 x) -> int32 
+    static Sgn(int32 x) -> int32 
         return (x > 0) ? 1 : (x < 0) ? -1 : 0
 
-    IsEven(int32 x) -> bool
+    static IsEven(int32 x) -> bool
         return x % 2 == 0
-    IsOdd(int32 x) -> bool
+    static IsOdd(int32 x) -> bool
         return x % 2 != 0
 
-    Pow(int32 x, int32 exp) -> int32 {
+    static Pow(int32 x, int32 exp) -> int32 {
         let res = 1
         for i in 1 ... exp {
             res *= x
         }
         return res
     }
+}
 
+shape Comparable<T> {
+    Compare(T other) -> int32 return 0
+}
+
+shape Equatable<T> {
+    Equate(T other) -> bool return false
+}
+
+shape Hashable {
+    Hash() -> uint64 return 0
 }
 
 shape Int32 {
-    MAX static const int32 = 2147483647
-    MIN static const int32 = -2147483648
+    static const MAX int32 = 2147483647
+    static const MIN int32 = -2147483648
 }
 
 shape Point {
     X int32
-    Y int32
+    Y int32 
 }
 
 print "standard library loaded"

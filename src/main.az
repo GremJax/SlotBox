@@ -6,50 +6,50 @@ shape Box {
     Width int32 = 0
     Height int32 = 0
 
-    Area(self) -> int32 {
+    Area() -> int32 {
         return self.Width * self.Height
     }
 
-    PrintSomething(self) {
+    PrintSomething() {
         print "hello"
     }
 
-    Bibble(self, int32 multiplier) -> int32 {
+    Bibble(int32 multiplier) -> int32 {
         return self.Width * multiplier
     }
 
-    Bleedle(int32 a, int32 b) -> int32 {
+    static Bleedle(int32 a, int32 b) -> int32 {
         return a + b
     }
 
-    Cardboard(int32 a, int32 b, int32 c, int32 d) -> int32 {
+    static Cardboard(int32 a, int32 b, int32 c, int32 d) -> int32 {
         return a + b + c + d
     }
     
-    InteriorShape Object
+    InteriorShape Object 
 }
 
 shape Named {
-    Name string
+    Name string 
 }
 
 shape NamedChild : Named ( Name -> Goofers ) {
-    Goofers string
+    Goofers string 
 }
 
 shape Arrayed {
-    List int32[]
+    List int32[] 
 }
 
 shape Counts {
-    MyCount int32
-    GlobalCount static int32 = 5
+    MyCount int32 
+    static GlobalCount int32 = 5
 }
 
 shape TypedThing<T> {
-    Thing T
+    Thing T 
 
-    PrintThing(self, T input) {
+    PrintThing(T input) {
         print input
         print self.Thing
     }

@@ -52,7 +52,7 @@ impl Operator {
 pub enum Keyword {
     Using,
     Shape, Let,
-    Static, Seal, Locked, Const,
+    Static, Seal, Locked, Const, Abstract,
     Before, After, Next,
     Func, PSelf, 
     If, Else, Switch,
@@ -205,6 +205,7 @@ pub fn tokenize(input: &str) -> Vec<Token> {
                     "self" => TokenKind::Keyword(Keyword::PSelf),
                     "seal" => TokenKind::Keyword(Keyword::Seal),
                     "locked" => TokenKind::Keyword(Keyword::Locked),
+                    "abstract" => TokenKind::Keyword(Keyword::Abstract),
                     "const" => TokenKind::Keyword(Keyword::Const),
                     "before" => TokenKind::Keyword(Keyword::Before),
                     "after" => TokenKind::Keyword(Keyword::After),
@@ -227,7 +228,8 @@ pub fn tokenize(input: &str) -> Vec<Token> {
 
                     "number" => TokenKind::Type(ValueKind::Number),
                     "int32" => TokenKind::Type(ValueKind::Int32),
-                    "byte" => TokenKind::Type(ValueKind::UInt8),
+                    "uint64" => TokenKind::Type(ValueKind::Int32),
+                    "uint8" => TokenKind::Type(ValueKind::UInt8),
                     "bool" => TokenKind::Type(ValueKind::Bool),
                     "string" => TokenKind::Type(ValueKind::String),
                     "void" => TokenKind::Type(ValueKind::None),

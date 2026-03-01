@@ -163,7 +163,7 @@ Shapes are defined as follows:
 
         Baz string
 
-        Qux(self) print "hello world"
+        Qux() print "hello world"
     
     }
 
@@ -171,7 +171,7 @@ Shapes can inherit from other shapes by listing their names after its own, follo
 
     shape ChildOfFoo : Foo {
 
-        PrintFoo(self) -> int32 {
+        PrintFoo() -> int32 {
             print "foo"
             return 0
         }
@@ -190,11 +190,11 @@ Azimuths can be locked, which makes it impossible to detach them even if the sha
 
     shape Foo {
 
-        GlobalCount static int32 = 0
+        static GlobalCount int32 = 0
 
-        Count locked int32 = 0
+        locked Count int32 = 0
 
-        MaxCount const int32 = 100
+        const MaxCount int32 = 100
 
     }
 
@@ -202,25 +202,41 @@ The "attach" and "detach" keywords are special functions called on an object whe
 
     shape Foo {
 
-        MaxCount const int32
+        const MaxCount int32
 
-        attach(self) {
+        attach() {
             self.MaxCount = 100
         }
 
-        detach(self) {
+        detach() {
             print "detached"
         }
+    }
 
+Functions are non-static implicitly and can be made static with the "static" keyword. Adding "self" as the first parameter makes it into a static function acting upon the caller as "self", which is the exact explicit form of the first pattern.
+
+    shape Foo {
+
+        DoSomething() {
+            print self
+        }
+
+        static DoSomething() {
+            print "static"
+        }
+
+        static DoSomething(self) {
+            print self
+        }
     }
 
 These can be given additional parameters which are required to attach the shape
 
     shape Foo {
 
-        MaxCount const int32
+        const MaxCount int32
 
-        attach(self, maxCount int32) {
+        attach(maxCount int32) {
             self.MaxCount = maxCount
         }
 
@@ -233,13 +249,21 @@ These can be given additional parameters which are required to attach the shape
 Functions and azimuths can also be abstract, which must be remapped from the object when they are attached
 
     shape Foo {
-        Data abstract int32[]
+        abstract Data int32[]
     }
 
     let obj := List<int32>
     obj := Foo(
         Data -> List::Array
     )
+
+Azimuths can have optional types just like Swift
+
+    shape Foo {
+        Bar int32?
+    }
+
+    print object.Bar ?? 0
 
 ### Objects
 

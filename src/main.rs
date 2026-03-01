@@ -19,6 +19,7 @@ pub enum ValueKind {
     Int32,
     Float32,
     UInt8,
+    UInt64,
     Number,
     Bool,
     String,
@@ -38,6 +39,7 @@ pub enum ValueKind {
 impl ValueKind {
     fn is_assignable_from(&self, other: ValueKind) -> bool {
         match self {
+            ValueKind::UInt64 => other == ValueKind::Number || other.is_assignable_from(ValueKind::Number),
             ValueKind::Int32 => other == ValueKind::Number || other.is_assignable_from(ValueKind::Number),
             ValueKind::Float32 => other == ValueKind::Number || other.is_assignable_from(ValueKind::Number),
             ValueKind::UInt8 => other == ValueKind::Number || other.is_assignable_from(ValueKind::Number),
@@ -72,6 +74,7 @@ impl ValueKind {
 pub enum Number {
     Int32(i32),
     UInt8(u8),
+    UInt64(u64),
     Float32(OrderedFloat<f32>),
     Any(i32),
 }
@@ -82,7 +85,8 @@ impl Number {
             Number::Int32(val) => *val,
             Number::Any(val) => *val,
             Number::UInt8(val) => (*val).into(),
-            Number::Float32(val) => panic!("float not convertible to int")
+            Number::UInt64(val) => panic!("long not convertible to int"),
+            Number::Float32(val) => panic!("float not convertible to int"),
         }
     }
 
@@ -90,6 +94,7 @@ impl Number {
         match self {
             Number::Int32(_) => ValueKind::Int32,
             Number::UInt8(_) => ValueKind::UInt8,
+            Number::UInt64(_) => ValueKind::UInt64,
             Number::Float32(_) => ValueKind::Float32,
             Number::Any(_) => ValueKind::Number,
         }

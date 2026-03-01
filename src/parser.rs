@@ -367,12 +367,19 @@ fn parse_shape_expression(tokens: &mut PeekableTokens) -> Result<ShapeExpression
     Ok(base)
 }
 
-fn parse_function(shape: ShapeExpression, tokens: &mut PeekableTokens) -> Result<RawFunction, ParseError> {
+fn parse_function(shape: ShapeExpression, is_static: bool, tokens: &mut PeekableTokens) -> Result<RawFunction, ParseError> {
     tokens.next(); // Consume LParen
 
     let mut input_types = Vec::new();
 
-    let has_self = if matches!(tokens.peek().unwrap().kind, TokenKind::Keyword(Keyword::PSelf)){
+    let has_self = if !is_static {
+        // Add self param
+        let self_param = RawFunctionParam{value_type: shape, identifier:format!("self")};
+        input_types.push(self_param);
+
+        true
+
+    } else if matches!(tokens.peek().unwrap().kind, TokenKind::Keyword(Keyword::PSelf)){
         tokens.next(); // Consume self keyword
 
         // Add self param
@@ -652,75 +659,91 @@ fn parse_statement(tokens: &mut PeekableTokens) -> Result<Statement, ParseError>
 
                 // Define slots
                 while let Some(token) = tokens.peek() {
-                    match &token.kind {
-                        // Slot name
-                        TokenKind::Identifier(slot_name) => {
-                            let slot_name = slot_name.clone();
-                            tokens.next();
-
-                            // Function check
-                            if matches!(tokens.peek().unwrap().kind,
-                                TokenKind::LeftParen) {
-                                
-                                // Function
-                                let func = parse_function(ShapeExpression::Shape(shape_identifier.clone()), tokens)?;
-                                let value_type = ShapeExpression::Function{func:Box::new(func.clone())};
-                                
-                                let func_expr = Expression::Function{ 
-                                    span:span.clone(), 
-                                    has_self:func.has_self,
-                                    input_types: func.input_types, 
-                                    output_type: func.output_type, 
-                                    func:Box::new(func.func) 
-                                };
-
-                                slot_ids.push(RawAzimuth { 
-                                    name: slot_name, 
-                                    value_type,
-                                    is_static: true, 
-                                    set_value: Some(func_expr), 
-                                });
-                                continue;
-                            }
-
-                            // Static
-                            let is_static = match tokens.peek().unwrap().kind {
-                                TokenKind::Keyword(Keyword::Static) => {
-                                    tokens.next();
-                                    true
-                                }
-                                _ => false
-                            };
-
-                            // Const
-                            let is_const = match tokens.peek().unwrap().kind {
-                                TokenKind::Keyword(Keyword::Const) => {
-                                    tokens.next();
-                                    true
-                                }
-                                _ => false
-                            };
-
-                            // Type
-                            let value_type = parse_shape_expression(tokens)?;
-
-                            // Default
-                            let set_value = match tokens.peek().unwrap().kind {
-                                TokenKind::Operator(Operator::Assign) => {
-                                    tokens.next();
-                                    Some(parse_expression(tokens)?)
-                                }
-                                _ => None
-                            };
-
-                            slot_ids.push(RawAzimuth { name: slot_name, value_type, is_static, set_value });
-                        },
-                        TokenKind::RightBrace => {
-                            tokens.next();
-                            break;
-                        },
-                        token => return Err(ParseError::UnexpectedToken{span, token:token.clone(), loc:format!("shape azimuth declaration")}),
+                    if matches!(token.kind, TokenKind::RightBrace) {
+                        tokens.next();
+                        break;
                     }
+
+                    // Static
+                    let is_static = match tokens.peek().unwrap().kind {
+                        TokenKind::Keyword(Keyword::Static) => {
+                            tokens.next();
+                            true
+                        }
+                        _ => false
+                    };
+
+                    // Const
+                    let is_const = match tokens.peek().unwrap().kind {
+                        TokenKind::Keyword(Keyword::Const) => {
+                            tokens.next();
+                            true
+                        }
+                        _ => false
+                    };
+
+                    // Abstract
+                    let is_abstract = match tokens.peek().unwrap().kind {
+                        TokenKind::Keyword(Keyword::Abstract) => {
+                            tokens.next();
+                            true
+                        }
+                        _ => false
+                    };
+
+                    // Locked
+                    let is_locked = match tokens.peek().unwrap().kind {
+                        TokenKind::Keyword(Keyword::Locked) => {
+                            tokens.next();
+                            true
+                        }
+                        _ => false
+                    };
+
+                    // Slot name
+                    let token = tokens.next().unwrap();
+                    let slot_name = match token.kind {
+                        TokenKind::Identifier(k) => k,
+                        other => return Err(ParseError::UnexpectedToken { span:token.span, token:other, loc: format!("azimuth declaration") }),
+                    };
+
+                    // Function check
+                    if matches!(tokens.peek().unwrap().kind, TokenKind::LeftParen) {
+                        
+                        // Function
+                        let func = parse_function(ShapeExpression::Shape(shape_identifier.clone()), is_static, tokens)?;
+                        let value_type = ShapeExpression::Function{func:Box::new(func.clone())};
+                        
+                        let func_expr = Expression::Function{ 
+                            span:span.clone(), 
+                            has_self:func.has_self,
+                            input_types: func.input_types, 
+                            output_type: func.output_type, 
+                            func:Box::new(func.func) 
+                        };
+
+                        slot_ids.push(RawAzimuth { 
+                            name: slot_name, 
+                            value_type,
+                            is_static: true, 
+                            set_value: Some(func_expr), 
+                        });
+                        continue;
+                    }
+
+                    // Type
+                    let value_type = parse_shape_expression(tokens)?;
+
+                    // Default
+                    let set_value = match tokens.peek().unwrap().kind {
+                        TokenKind::Operator(Operator::Assign) => {
+                            tokens.next();
+                            Some(parse_expression(tokens)?)
+                        }
+                        _ => None
+                    };
+
+                    slot_ids.push(RawAzimuth { name: slot_name, value_type, is_static, set_value });
                 }
             } else {
                 return Err(ParseError::IncorrectToken{span, token:token.kind, expected:format!("{{"), loc:format!("shape declaration")});

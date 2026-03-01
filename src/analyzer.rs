@@ -1,6 +1,6 @@
 use std::{collections::HashMap, fs};
 
-use crate::{AzimuthId, FunctionInfo, ObjectId, PrimitiveValue, ShapeId, Value, ValueKind, analyzer, executor::{self, OBJECT_INSTANCE, ShapeInstance}, parser::{self, Mapping}, tokenizer::{self, Span}}; 
+use crate::{AzimuthId, FunctionInfo, GenericId, Number, ObjectId, ShapeId, Value, ValueKind, analyzer, executor::{self, OBJECT_INSTANCE, ShapeInstance}, parser::{self, Mapping}, tokenizer::{self, Span}}; 
 use parser::{RawAzimuth, Expression, Statement, ShapeExpression};
 use tokenizer::{Operator};
 
@@ -93,10 +93,17 @@ pub struct LocalInfo {
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct GenericInfo {
+    pub id: GenericId,
+    pub name: Identifier,
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum Symbol {
     Shape(ShapeInfo),
     Object(ObjectInfo),
     Azimuth(AzimuthInfo),
+    Generic(GenericInfo),
     Local(LocalInfo),
 }
 
@@ -106,6 +113,7 @@ impl Symbol {
             Symbol::Shape(info) => ValueKind::Shape(ShapeInstance{id: info.id, generics: Vec::new()}),
             Symbol::Object(info) => ValueKind::Shape(executor::OBJECT_INSTANCE),
             Symbol::Azimuth(info) => info.value_type.clone(),
+            Symbol::Generic(info) => ValueKind::Generic(info.id),
             Symbol::Local(info) => info.known_shapes.first().unwrap().clone(),
         }
     }
@@ -118,6 +126,7 @@ pub struct Scope {
     pub id: ScopeId,
     pub parent: Option<ScopeId>,
     pub symbols: HashMap<Identifier, Symbol>,
+    pub generics: GenericId,
     pub locals: u32,
 }
 
@@ -300,7 +309,7 @@ struct Analyzer{
 
 impl Analyzer {
     pub fn new() -> Self {
-        let global = Scope{id: 0, parent: None, symbols: HashMap::new(), locals:0};
+        let global = Scope{id: 0, parent: None, symbols: HashMap::new(), locals:0, generics:0};
         let mut analyzer = Analyzer{
             scopes: Vec::new(), 
             next_scope_id: 1,
@@ -323,7 +332,14 @@ impl Analyzer {
     pub fn create_scope(&mut self, parent:ScopeId) -> ScopeId {
         let id = self.next_scope_id;
         let parent_scope = self.get_scope(parent);
-        let scope = Scope{id: id.clone(), parent: Some(parent), symbols: HashMap::new(), locals:parent_scope.locals};
+
+        let scope = Scope{
+            id: id.clone(), 
+            parent: Some(parent), 
+            symbols: HashMap::new(), 
+            locals:parent_scope.locals, 
+            generics:parent_scope.generics
+        };
 
         self.next_scope_id += 1;
         self.scopes.push(scope);
@@ -364,6 +380,8 @@ impl Analyzer {
     -> Result<(&Symbol, Vec<&Symbol>), CompileError> {
         let id = self.next_shape_id.clone();
         self.next_shape_id += 1;
+
+        let new_scope = self.create_scope(scope_id);
         
         // Shape symbol header
         let symbol = Symbol::Shape(ShapeInfo{
@@ -400,6 +418,7 @@ impl Analyzer {
         self.next_azimuth_id = az_id;
         
         {
+            // Insert into parent scope
             let scope = self.get_scope_mut(scope_id);
 
             // Insert azimuth headers
@@ -417,13 +436,15 @@ impl Analyzer {
         // Generics
         let mut resolved_generics = Vec::new();
         for generic in generics {
-            resolved_generics.push(self.resolve_shape_expression(generic, scope_id)?);
+            self.declare_generic(&generic, new_scope);
+            let resolved_generic = self.resolve_shape_expression(generic, new_scope)?;
+            resolved_generics.push(resolved_generic);
         }
 
         // Inheritance
         let mut parent_ids = Vec::new();
         for parent in parents {
-            match self.get_shape(scope_id, parent.clone()) {
+            match self.get_shape(new_scope, parent.clone()) {
                 Some(Symbol::Shape(info)) => parent_ids.push(info.id),
                 _ => return Err(CompileError::UndefinedSymbol { span, name:parent })
             }
@@ -431,12 +452,12 @@ impl Analyzer {
 
         let mut resolved_mappings = Vec::new();
         for mapping in mappings {
-            resolved_mappings.push(self.resolve_mapping(span.clone(), mapping, scope_id)?);
+            resolved_mappings.push(self.resolve_mapping(span.clone(), mapping, new_scope)?);
         }
 
         // Static singleton
         let static_info = if has_static {
-            Some(self.declare_object(scope_id, format!("{}::Static", name), ResolvedShapeExpression::Primitive(ValueKind::Shape(OBJECT_INSTANCE))).clone())
+            Some(self.declare_object(new_scope, format!("{}::Static", name), ResolvedShapeExpression::Primitive(ValueKind::Shape(OBJECT_INSTANCE))).clone())
         } else { None };
 
         // Propegate Shape
@@ -460,11 +481,11 @@ impl Analyzer {
             names.push(azimuth.name.clone());
 
             let default_value = match azimuth.set_value {
-                Some(expr) => Some(self.resolve_expression(expr, scope_id)?),
+                Some(expr) => Some(self.resolve_expression(expr, new_scope)?),
                 _ => None,
             };
 
-            let value_type = self.resolve_shape_expression(azimuth.value_type, scope_id)?;
+            let value_type = self.resolve_shape_expression(azimuth.value_type, new_scope)?;
 
             let scope = self.get_scope_mut(scope_id);
             let symbol = scope.symbols.get_mut(&azimuth.name).unwrap();
@@ -480,10 +501,25 @@ impl Analyzer {
         // Retrieve propegated symbols
         let mut propegated_az = Vec::new();
         for name in names {
-            propegated_az.push(self.get_symbol(scope_id, name).unwrap())
+            propegated_az.push(self.get_symbol(new_scope, name).unwrap())
         }
 
-        Ok((self.get_symbol(scope_id, name).unwrap(), propegated_az))
+        Ok((self.get_symbol(new_scope, name).unwrap(), propegated_az))
+    }
+
+    fn declare_generic(&mut self, shape: &ShapeExpression, scope: ScopeId) {
+        let identifier = match shape {
+            ShapeExpression::Shape(identifier) => identifier,
+            _ => todo!()
+        };
+        
+        let scope = self.get_scope_mut(scope);
+        let id = scope.generics;
+        scope.generics += 1;
+
+        let symbol = Symbol::Generic(GenericInfo{id, name:identifier.clone()});
+
+        scope.symbols.insert(identifier.clone(), symbol);
     }
 
     fn declare_object(&mut self, scope: ScopeId, name: Identifier, shape: ResolvedShapeExpression) -> &Symbol {
@@ -553,22 +589,25 @@ impl Analyzer {
             Expression::UnaryOp { span, operator, operand } => {
                 match self.resolve_expression(*operand, scope)? {
                     // Bool Optimization
-                    ResolvedExpression::Value(span, Value::Single(PrimitiveValue::Bool(val))) => match operator {
+                    ResolvedExpression::Value(span, Value::Bool(val)) => match operator {
                         Operator::Not => Ok(ResolvedExpression::Value(span, (!val).into())),
                         operator => Err(CompileError::InvalidUnaryOp { span, operator, operand:val.into()}),
                     },
 
                     // Int Optimization
-                    ResolvedExpression::Value(span, Value::Single(PrimitiveValue::Int32(val))) => match operator {
-                        Operator::Inc => Ok(ResolvedExpression::Value(span, (val + 1).into())),
-                        Operator::Dec => Ok(ResolvedExpression::Value(span, (val - 1).into())),
-                        Operator::BWNot => Ok(ResolvedExpression::Value(span, (!val).into())),
-                        Operator::Sub => Ok(ResolvedExpression::Value(span, (-val).into())),
-                        operator => Err(CompileError::InvalidUnaryOp { span, operator, operand:val.into()}),
+                    ResolvedExpression::Value(span, Value::Number(val)) => {
+                        let val = val.to_i32();
+                        match operator {
+                            Operator::Inc => Ok(ResolvedExpression::Value(span, (val + 1).into())),
+                            Operator::Dec => Ok(ResolvedExpression::Value(span, (val - 1).into())),
+                            Operator::BWNot => Ok(ResolvedExpression::Value(span, (!val).into())),
+                            Operator::Sub => Ok(ResolvedExpression::Value(span, (-val).into())),
+                            operator => Err(CompileError::InvalidUnaryOp { span, operator, operand:val.into()}),
+                        }
                     },
 
                     // String Optimization
-                    ResolvedExpression::Value(span, Value::Single(PrimitiveValue::String(val))) => match operator {
+                    ResolvedExpression::Value(span, Value::String(val)) => match operator {
                         Operator::Len => Ok(ResolvedExpression::Value(span, (val.len() as i32).into())),
                         operator => Err(CompileError::InvalidUnaryOp { span, operator, operand:val.into()}),
                     },
@@ -587,8 +626,8 @@ impl Analyzer {
             Expression::BinaryOp { span, left, operator, right } => {
                 match (self.resolve_expression(*left, scope)?, self.resolve_expression(*right, scope)?) {
                     // Bool Optimization
-                    (ResolvedExpression::Value(span, Value::Single(PrimitiveValue::Bool(left))), 
-                        ResolvedExpression::Value(_, Value::Single(PrimitiveValue::Bool(right)))) => match operator {
+                    (ResolvedExpression::Value(span, Value::Bool(left)), 
+                        ResolvedExpression::Value(_, Value::Bool(right))) => match operator {
                         Operator::Equal => Ok(ResolvedExpression::Value(span, (left == right).into())),
                         Operator::NEqual => Ok(ResolvedExpression::Value(span, (left != right).into())),
                         Operator::And => Ok(ResolvedExpression::Value(span, (left && right).into())),
@@ -597,27 +636,34 @@ impl Analyzer {
                     },
                     
                     // Int Optimization
-                    (ResolvedExpression::Value(span, Value::Single(PrimitiveValue::Int32(left))), 
-                        ResolvedExpression::Value(_, Value::Single(PrimitiveValue::Int32(right)))) => match operator {
-                        Operator::Equal => Ok(ResolvedExpression::Value(span, (left == right).into())),
-                        Operator::NEqual => Ok(ResolvedExpression::Value(span, (left != right).into())),
-                        Operator::LT => Ok(ResolvedExpression::Value(span, (left < right).into())),
-                        Operator::GT => Ok(ResolvedExpression::Value(span, (left > right).into())),
-                        Operator::LTE => Ok(ResolvedExpression::Value(span, (left <= right).into())),
-                        Operator::GTE => Ok(ResolvedExpression::Value(span, (left >= right).into())),
-                        Operator::Add => Ok(ResolvedExpression::Value(span, (left + right).into())),
-                        Operator::Sub => Ok(ResolvedExpression::Value(span, (left - right).into())),
-                        Operator::Mul => Ok(ResolvedExpression::Value(span, (left * right).into())),
-                        Operator::Div => Ok(ResolvedExpression::Value(span, (left / right).into())),
-                        Operator::Mod => Ok(ResolvedExpression::Value(span, (left % right).into())),
-                        Operator::BWAnd => Ok(ResolvedExpression::Value(span, (left & right).into())),
-                        Operator::BWOr => Ok(ResolvedExpression::Value(span, (left | right).into())),
-                        Operator::BWXor => Ok(ResolvedExpression::Value(span, (left ^ right).into())),
-                        Operator::BWShiftL => Ok(ResolvedExpression::Value(span, (left << right).into())),
-                        Operator::BWShiftR => Ok(ResolvedExpression::Value(span, (left >> right).into())),
-                        Operator::Range => Ok(ResolvedExpression::Value(span, executor::create_range(left, right))),
-                        Operator::RangeLT => Ok(ResolvedExpression::Value(span, executor::create_range(left, right - 1))),
-                        operator => Err(CompileError::InvalidBinaryOp { span, operator, left:left.into(), right:right.into() }),
+                    (ResolvedExpression::Value(span, Value::Number(left)), 
+                        ResolvedExpression::Value(_, Value::Number(right))) => {
+                        let left = left.to_i32();
+                        let right: i32 = right.to_i32();
+                        match operator {
+                            Operator::Equal => Ok(ResolvedExpression::Value(span, (left == right).into())),
+                            Operator::NEqual => Ok(ResolvedExpression::Value(span, (left != right).into())),
+                            Operator::LT => Ok(ResolvedExpression::Value(span, (left < right).into())),
+                            Operator::GT => Ok(ResolvedExpression::Value(span, (left > right).into())),
+                            Operator::LTE => Ok(ResolvedExpression::Value(span, (left <= right).into())),
+                            Operator::GTE => Ok(ResolvedExpression::Value(span, (left >= right).into())),
+                            Operator::Add => Ok(ResolvedExpression::Value(span, (left + right).into())),
+                            Operator::Sub => Ok(ResolvedExpression::Value(span, (left - right).into())),
+                            Operator::Mul => Ok(ResolvedExpression::Value(span, (left * right).into())),
+                            Operator::Div => Ok(ResolvedExpression::Value(span, (left / right).into())),
+                            Operator::Mod => Ok(ResolvedExpression::Value(span, (left % right).into())),
+                            Operator::BWAnd => Ok(ResolvedExpression::Value(span, (left & right).into())),
+                            Operator::BWOr => Ok(ResolvedExpression::Value(span, (left | right).into())),
+                            Operator::BWXor => Ok(ResolvedExpression::Value(span, (left ^ right).into())),
+                            Operator::BWShiftL => Ok(ResolvedExpression::Value(span, (left << right).into())),
+                            Operator::BWShiftR => Ok(ResolvedExpression::Value(span, (left >> right).into())),
+                            Operator::Range => Ok(ResolvedExpression::Value(span, executor::create_range(left, right))),
+                            Operator::RangeLT => {
+                                if left == right { Ok(ResolvedExpression::Value(span, Value::Array(Vec::new(), ValueKind::Int32))) }
+                                else { Ok(ResolvedExpression::Value(span, executor::create_range(left, right + if left > right {1} else {-1}))) }
+                            }
+                            operator => Err(CompileError::InvalidBinaryOp { span, operator, left:left.into(), right:right.into() }),
+                        }
                     },
 
                     // Default
@@ -743,9 +789,11 @@ impl Analyzer {
 
     pub fn resolve_shape_expression(&mut self, expression:ShapeExpression, scope:ScopeId) -> Result<ResolvedShapeExpression, CompileError> {
         match expression{
-            ShapeExpression::Shape(k) => Ok(ResolvedShapeExpression::Simple(
-                self.get_shape(scope, k.clone()).expect(format!("Shape not found in scope: {:?}", k).as_str()).clone()
-            )),
+            ShapeExpression::Shape(k) => match self.get_symbol(scope, k.clone()) {
+                Some(Symbol::Shape(info)) => Ok(ResolvedShapeExpression::Simple(Symbol::Shape(info.clone()))),
+                Some(Symbol::Generic(info)) => Ok(ResolvedShapeExpression::Parameter(info.name.clone())),
+                _ => Err(CompileError::UndefinedSymbol { span:Span{line:0,column:0}, name: k })
+            }
             ShapeExpression::Primitive(kind) => Ok(ResolvedShapeExpression::Primitive(kind)),
             ShapeExpression::Array(expr) => Ok(ResolvedShapeExpression::Array(Box::new(self.resolve_shape_expression(*expr, scope)?))),
             ShapeExpression::Applied { base, args } => {
@@ -914,7 +962,7 @@ impl Analyzer {
                 let target = self.resolve_expression(target, scope)?;
                 let value = self.resolve_expression(value, scope)?;
 
-                if target.kind() != value.kind() {
+                if !target.kind().is_assignable_from(value.kind()) {
                     return Err(CompileError::TypeMismatch { span, expected: target.kind(), found: value.kind(), loc:format!("value assignment") })
                 }
 
@@ -926,10 +974,10 @@ impl Analyzer {
                 let value = self.resolve_expression(value, scope)?;
 
                 // Ensure int types
-                if target.kind() != ValueKind::Int32 {
+                if !target.kind().is_assignable_from(ValueKind::Number) {
                     return Err(CompileError::TypeMismatch { span, expected: ValueKind::Int32, found: target.kind(), loc:format!("augmented assignment target") })
                 }
-                if value.kind() != ValueKind::Int32 {
+                if !value.kind().is_assignable_from(ValueKind::Number) {
                     return Err(CompileError::TypeMismatch { span, expected: ValueKind::Int32, found: value.kind(), loc:format!("augmented assignment value") })
                 }
 

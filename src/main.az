@@ -46,9 +46,14 @@ shape Counts {
     GlobalCount static int32 = 5
 }
 
-//shape TypedThing<T> {
-//    Thing T
-//}
+shape TypedThing<T> {
+    Thing T
+
+    PrintThing(self, T input) {
+        print input
+        print self.Thing
+    }
+}
 
 print "__"
 
@@ -78,11 +83,11 @@ firstThing.Width = 20
 firstThing.Height = 2
 print firstThing
 
-//firstThing := TypedThing<int32>
-//print firstThing
+firstThing := TypedThing<int32> 
+print firstThing
 
-//firstThing.Thing = 
-//print firstThing
+firstThing.Thing = 5
+print firstThing
 
 let secondThing := Box
 secondThing.Height = 6
@@ -168,3 +173,5 @@ print thirdThing
 secondThing.PrintSomething()
 
 print "Program successfully executed!"
+
+firstThing.PrintThing(16)

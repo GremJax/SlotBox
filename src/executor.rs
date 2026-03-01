@@ -2,7 +2,7 @@ use crate::analyzer::LocalId;
 use crate::{Function, FunctionParameter};
 use crate::tokenizer::{Operator, Span};
 use crate::{
-    Mapping, ObjectId, PrimitiveValue, Runtime, ShapeId, Value, ValueKind, executor,
+    Mapping, ObjectId, Number, Runtime, ShapeId, Value, ValueKind, executor,
     analyzer::{ResolvedExpression, ResolvedShapeExpression, ResolvedStatement, Symbol},
 };
 use std::collections::{HashMap, HashSet};
@@ -56,25 +56,27 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
             }
             Ok(Value::Array(values, kind))
         },
-        ResolvedExpression::Variable(_, Symbol::Object(k)) => Ok(Value::Single(PrimitiveValue::Object(k.id, ValueKind::Shape(OBJECT_INSTANCE)))),
+        ResolvedExpression::Variable(_, Symbol::Object(k)) => Ok(Value::Object(k.id, ValueKind::Shape(OBJECT_INSTANCE))),
         ResolvedExpression::Variable(_, Symbol::Local(k)) => Ok(runtime.get_local(k.id).clone()),
 
         ResolvedExpression::UnaryOp { span, operator, operand } => {
             match (operator, evaluate(runtime, *operand)?) {
-                (op, Value::Single(PrimitiveValue::Bool(val))) => 
+                (op, Value::Bool(val)) => 
                     match op {
                         Operator::Not => Ok((!val).into()),
                         operator => Err(RuntimeError::InvalidOperator { span, operator, operand:ValueKind::Bool })
                     },
-                (op, Value::Single(PrimitiveValue::Int32(val))) => 
+                (op, Value::Number(val)) => {
+                    let val = val.to_i32();
                     match op {
                         Operator::Inc => Ok((val + 1).into()),
                         Operator::Dec => Ok((val - 1).into()),
                         Operator::BWNot => Ok((!val).into()),
                         Operator::Sub => Ok((-val).into()),
                         operator => Err(RuntimeError::InvalidOperator { span, operator, operand:ValueKind::Int32 })
-                    },
-                (op, Value::Single(PrimitiveValue::String(val))) => 
+                    }
+                },   
+                (op, Value::String(val)) => 
                     match op {
                         Operator::Len => Ok((val.len() as i32).into()),
                         operator => Err(RuntimeError::InvalidOperator { span, operator, operand:ValueKind::String })
@@ -93,7 +95,7 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
             match (evaluate(runtime, *left)?, operator, evaluate(runtime, *right)?) { 
                 
                 // Bool - Bool
-                (Value::Single(PrimitiveValue::Bool(left)), op, Value::Single(PrimitiveValue::Bool(right))) => 
+                (Value::Bool(left), op, Value::Bool(right)) => 
                     match op {
                         Operator::Equal => Ok((left == right).into()),
                         Operator::NEqual => Ok((left != right).into()),
@@ -103,7 +105,9 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
                     },
                       
                 // Int - Int
-                (Value::Single(PrimitiveValue::Int32(left)), op, Value::Single(PrimitiveValue::Int32(right))) => 
+                (Value::Number(left), op, Value::Number(right)) => {
+                    let left = left.to_i32();
+                    let right = right.to_i32();
                     match op {
                         Operator::Equal => Ok((left == right).into()),
                         Operator::NEqual => Ok((left != right).into()),
@@ -125,13 +129,17 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
                         Operator::BWShiftR => Ok((left >> right).into()),
                         
                         Operator::Range => Ok(create_range(left, right)),
-                        Operator::RangeLT => Ok(create_range(left, right - 1)),
+                        Operator::RangeLT => {
+                            if left == right { Ok(Value::Array(Vec::new(), ValueKind::Int32)) }
+                            else { Ok(create_range(left, right + if left > right {1} else {-1})) }
+                        } 
                         
                         operator => Err(RuntimeError::InvalidOperator { span, operator, operand: ValueKind::Int32 }),
-                    },
+                    }
+                },
                     
                 // String - String
-                (Value::Single(PrimitiveValue::String(left)), op, Value::Single(PrimitiveValue::String(right))) => 
+                (Value::String(left), op, Value::String(right)) => 
                     match op {
                         Operator::Equal => Ok((left == right).into()),
                         Operator::NEqual => Ok((left != right).into()),
@@ -151,7 +159,7 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
                 return Err(RuntimeError::TypeMismatch { span, found: condition, expected: ValueKind::Bool })
             }
 
-            if condition == Value::Single(PrimitiveValue::Bool(true)) {
+            if condition == Value::Bool(true) {
                 Ok(evaluate(runtime,*true_expr)?)
             } else {
                 Ok(evaluate(runtime,*else_expr)?)
@@ -160,7 +168,7 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
         
         ResolvedExpression::MemberAccess{ span, target, member} => {
             match (evaluate(runtime, *target)?, member) {
-                (Value::Single(PrimitiveValue::Object(object_id, _)), Symbol::Azimuth(azimuth)) => {
+                (Value::Object(object_id, _), Symbol::Azimuth(azimuth)) => {
                     match runtime.get_slot_value(object_id, azimuth.id) {
                         Some(value) => Ok(value.clone()),
                         None => return Err(RuntimeError::Error{span, message:format!("Member {:?} not found for {:?}", azimuth.name, object_id)}),
@@ -175,8 +183,8 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
             let index = evaluate(runtime, *index)?;
 
             match (target, index) {
-                (Value::Array(array, _), Value::Single(PrimitiveValue::Int32(index))) => {
-                    match array.get(index as usize) {
+                (Value::Array(array, _), Value::Number(index)) => {
+                    match array.get(index.to_i32() as usize) {
                         Some(value) => Ok(*value.clone()),
                         None => return Err(RuntimeError::Error{span, message:format!("Index {:?} out of bounds", index)}),
                     }
@@ -194,7 +202,7 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
             let target = evaluate(runtime, *target)?;
 
             let func = match target {
-                Value::Single(PrimitiveValue::Function(func)) => func,
+                Value::Function(func) => func,
                 other => return Err(RuntimeError::Error{span, message:format!("{:?} is not a function", other)}),
             };
 
@@ -211,9 +219,9 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
 
             match execute_statement(runtime, statement.clone())? {
                 ExecFlow::Error { span, message } => Err(RuntimeError::Throw { span, message }),
-                ExecFlow::Return(span, Value::Single(value)) => {
+                ExecFlow::Return(span, value) => {
                     if value.kind() != expected_return {
-                        return Err(RuntimeError::TypeMismatch { span, found: Value::Single(value), expected: expected_return });
+                        return Err(RuntimeError::TypeMismatch { span, found: value, expected: expected_return });
                     }
 
                     // Free locals
@@ -221,7 +229,7 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
                         runtime.clear_local(param.local);
                     }
 
-                    Ok(Value::Single(value))
+                    Ok(value)
                 },
                 ExecFlow::Normal(span) => {
                     if expected_return != ValueKind::None {
@@ -233,7 +241,7 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
                         runtime.clear_local(param.local);
                     }
 
-                    Ok(Value::Empty)
+                    Ok(Value::None)
                 }
                 _ => Err(RuntimeError::Error { span, message:format!("No value returned, expected {:?}", expected_return) }),
             }
@@ -256,7 +264,7 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
                 output_type, 
                 func: *func,
             };
-            Ok(Value::Single(PrimitiveValue::Function(Box::new(function))))
+            Ok(Value::Function(Box::new(function)))
         }
 
         other => panic!("Invalid expression: {:?}", other)
@@ -267,8 +275,8 @@ pub fn evaluate_place(runtime: &mut Runtime, expression:ResolvedExpression) -> R
     match expression {
         ResolvedExpression::MemberAccess{ span, target, member} => {
             match (evaluate(runtime, *target)?, member) {
-                (Value::Single(PrimitiveValue::Object(object_id, kind)), Symbol::Azimuth(azimuth)) => {
-                    Ok(Value::Single(PrimitiveValue::Pointer(object_id, azimuth.id, kind)))
+                (Value::Object(object_id, kind), Symbol::Azimuth(azimuth)) => {
+                    Ok(Value::Pointer(object_id, azimuth.id, kind))
                 }
                 (other, member) => Err(RuntimeError::Error{span, message:format!("Member access not permitted for {:?}.{:?}", other, member)}),
             }
@@ -277,29 +285,37 @@ pub fn evaluate_place(runtime: &mut Runtime, expression:ResolvedExpression) -> R
             let target = evaluate_place(runtime, *target)?;
             let index = evaluate(runtime, *index)?;
             
-            let i = if let Value::Single(PrimitiveValue::Int32(index)) = index {
-                index as usize
+            let i = if let Value::Number(index) = index {
+                index.to_i32() as usize
             } else { return Err(RuntimeError::TypeMismatch { span, found: index, expected: ValueKind::Int32 }) };
             
             match target {
-                Value::Single(PrimitiveValue::Pointer(object_id, azimuth_id, kind)) => {
-                    Ok(Value::Single(PrimitiveValue::ArrayElement(object_id, azimuth_id, kind, i)))
+                Value::Pointer(object_id, azimuth_id, kind) => {
+                    Ok(Value::ArrayElement(object_id, azimuth_id, kind, i))
                 }
                 other => Err(RuntimeError::Error{span, message:format!("Array access not permitted for {:?}[{}]", other, i)})
             }
             
         },
-        ResolvedExpression::Variable(_, Symbol::Local(k)) => Ok(Value::Single(PrimitiveValue::Local(k.id, runtime.get_local(k.id).kind()))),
+        ResolvedExpression::Variable(_, Symbol::Local(k)) => Ok(Value::Local(k.id, runtime.get_local(k.id).kind())),
         other => evaluate(runtime, other), 
     }
 }
 
 pub fn create_range(from: i32, to: i32) -> Value {
-    let mut range = Vec::new();
-    for i in from..=to {
-        range.push(Box::new(i.into()));
-    }
-    Value::Array(range, ValueKind::Int32)
+
+    let values: Vec<Box<Value>> = if from <= to {
+        (from..=to)
+            .map(|i| Box::new(i.into()))
+            .collect()
+    } else {
+        (to..=from)
+            .rev()
+            .map(|i| Box::new(i.into()))
+            .collect()
+    };
+
+    Value::Array(values, ValueKind::Int32)
 }
 
 pub fn execute(runtime: &mut Runtime, ast: Vec<ResolvedStatement>) -> Result<ExecFlow, RuntimeError> {
@@ -346,11 +362,9 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
         },
         ResolvedStatement::Print { span, expr } => {
             match evaluate(runtime, expr)? {
-                Value::Single(PrimitiveValue::String(k)) => println!("{}", k),
-                Value::Single(PrimitiveValue::Object(object_id, _)) => runtime.print_object(object_id),
-                Value::Single(k) => println!("{:?}", k),
-                Value::Array(k, _) => println!("{:?}", k),
-                other => { return Err(RuntimeError::TypeMismatch{span, found: other, expected: ValueKind::String}); }
+                Value::String(k) => println!("{}", k),
+                Value::Object(object_id, _) => runtime.print_object(object_id),
+                other => println!("{:?}", other),
             }
             Ok(ExecFlow::Normal(span))
         },
@@ -390,7 +404,7 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
 
         ResolvedStatement::Attach { span, object, shape} => {
             match (evaluate(runtime, object)?, evaluate_shape(runtime, shape)) {
-                (Value::Single(PrimitiveValue::Object(object_id, _)), ValueKind::Shape(shape_inst)) => 
+                (Value::Object(object_id, _), ValueKind::Shape(shape_inst)) => 
                     runtime.attach_shape(object_id, shape_inst),
                 (object, shape) => return Err(RuntimeError::Error{span, message:format!("Could not attach {:?} to {:?}", shape, object)})
             }
@@ -399,7 +413,7 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
 
         ResolvedStatement::Detach { span, object, shape } => {
             match (evaluate(runtime, object)?, evaluate_shape(runtime, shape)) {
-                (Value::Single(PrimitiveValue::Object(object_id, _)), ValueKind::Shape(shape_inst)) => runtime.detach_shape(object_id, shape_inst),
+                (Value::Object(object_id, _), ValueKind::Shape(shape_inst)) => runtime.detach_shape(object_id, shape_inst),
                 (object, shape) => return Err(RuntimeError::Error{span, message:format!("Could not detach {:?} from {:?}", shape, object)})
             }
             Ok(ExecFlow::Normal(span))
@@ -407,7 +421,7 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
 
         ResolvedStatement::AddMapping { span, object, mapping } => {
             match (evaluate(runtime, object)?, mapping.from, mapping.to) {
-                (Value::Single(PrimitiveValue::Object(object_id, _)), Symbol::Azimuth(from), Symbol::Azimuth(to))
+                (Value::Object(object_id, _), Symbol::Azimuth(from), Symbol::Azimuth(to))
                     => runtime.remap_slot(object_id, to.id, from.id),
                 (object, from, to) => return Err(RuntimeError::Error{span, message:format!("Invalid mapping: {:?}, {:?} -> {:?}", object, from, to)}),
             }
@@ -416,7 +430,7 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
 
         ResolvedStatement::AttachWithRemap { span, object, shape, mappings } => {
             match (evaluate(runtime, object)?, evaluate_shape(runtime, shape)) {
-                (Value::Single(PrimitiveValue::Object(object_id, _)), ValueKind::Shape(shape_inst)) => {
+                (Value::Object(object_id, _), ValueKind::Shape(shape_inst)) => {
                     
                     let mut remap = Vec::new();
                     for mapping in mappings {
@@ -440,13 +454,13 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
             let val = evaluate(runtime, value)?;
 
             match evaluate_place(runtime, target)? {
-                Value::Single(PrimitiveValue::Pointer(object_id, az, kind)) => {
+                Value::Pointer(object_id, az, kind) => {
                     runtime.set_slot_value(object_id, az, val);
                 }
-                Value::Single(PrimitiveValue::ArrayElement(obj, az, kind, i)) => {
+                Value::ArrayElement(obj, az, kind, i) => {
                     runtime.set_slot_value_array_element(obj, az, i, val);
                 }
-                Value::Single(PrimitiveValue::Local(loc, kind)) => {
+                Value::Local(loc, kind) => {
                     runtime.reserve_local(loc, val);
                 }
                 other => return Err(RuntimeError::Error{span, message:format!("Could not assign {:?} to {:?}", val, other)}),
@@ -458,8 +472,8 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
             let cond = evaluate(runtime, condition)?;
 
             match cond {
-                Value::Single(PrimitiveValue::Bool(true)) => execute_statement(runtime, *true_statement),
-                Value::Single(PrimitiveValue::Bool(false)) => {
+                Value::Bool(true) => execute_statement(runtime, *true_statement),
+                Value::Bool(false) => {
                     if let Some(statement) = *else_statement {
                         return execute_statement(runtime, statement)
                     }
@@ -473,8 +487,8 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
             let mut flag = true;
             while flag {
                 flag = match evaluate(runtime, condition.clone())? {
-                    Value::Single(PrimitiveValue::Bool(true)) => true,
-                    Value::Single(PrimitiveValue::Bool(false)) => false,
+                    Value::Bool(true) => true,
+                    Value::Bool(false) => false,
                     other => return Err(RuntimeError::Error{span, message:format!("While condition was not true or false: {:?}", other)}),
                 };
 
@@ -539,7 +553,7 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
         ResolvedStatement::Return { span, value } => Ok(ExecFlow::Return(span, evaluate(runtime, value)?)),
         ResolvedStatement::Throw { span, message } => {
             match evaluate(runtime, message)? {
-                Value::Single(PrimitiveValue::String(message)) => Ok(ExecFlow::Error{span, message}),
+                Value::String(message) => Ok(ExecFlow::Error{span, message}),
                 other => Err(RuntimeError::TypeMismatch{span, found: other, expected: ValueKind::String})
             }
         }

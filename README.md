@@ -60,12 +60,44 @@ For loops and while loops function how you would expect
             break
     }
 
-### Expressions
-
 Array indexing is done with brackets.
 
     print x[i]
     x[i + 1] = 5
+
+### Functions
+
+Functions are written just like any other azimuth, but with parenthesis following the name with a number of parameters and their types. Then, an optional arrow with a return type, and the code to be executed.
+
+    PrintFoo() 
+        print "foo"
+    
+    PrintBar(x string) {
+        print "bar"
+        print x
+    }
+
+Functions are all static, so the first argument of a function must be "self" for the function to access an object's values. The self object will always have the shape declaring the function.
+
+    PrintName(self) {
+        print self.Name
+    }
+
+    PrintNameOrFoo(self, x bool) {
+        if x
+            print self.Name
+        else print "foo"
+    }
+
+Functions can be given a return type. Functions must then return the appropriate type within the function statement.
+
+    GetName(self) -> string
+        return self.Name
+
+    PrintNameAndReturn(self) -> string {
+        print self.Name
+        return self.GetName()
+    }
 
 ### Operators
 

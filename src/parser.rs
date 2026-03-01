@@ -1,8 +1,6 @@
 use crate::executor::OBJECT_INSTANCE;
 use crate::tokenizer::{self, Keyword, Operator, Span, Token, TokenKind, UNARY_OPERATORS};
-use crate::{Function, FunctionInfo, PrimitiveValue};
-use crate::Value;
-use crate::ValueKind;
+use crate::{Function, ValueKind, Value};
 
 type Identifier = String;
 
@@ -533,12 +531,12 @@ fn parse_object_statement(span:Span, tokens: &mut PeekableTokens) -> Result<Stat
         }
         TokenKind::Operator(Operator::Inc) => {
             tokens.next(); // consume operator
-            let one = Expression::Value(span.clone(), Value::Single(PrimitiveValue::Int32(1)));
+            let one = Expression::Value(span.clone(), 1.into());
             Ok(Statement::AssignAugmented{ span, target: object, value:one, operator:Operator::Add })
         }
         TokenKind::Operator(Operator::Dec) => {
             tokens.next(); // consume operator
-            let one = Expression::Value(span.clone(), Value::Single(PrimitiveValue::Int32(-1)));
+            let one = Expression::Value(span.clone(), (-1).into());
             Ok(Statement::AssignAugmented{ span, target: object, value:one, operator:Operator::Add })
         }
 
@@ -823,7 +821,7 @@ fn parse_statement(tokens: &mut PeekableTokens) -> Result<Statement, ParseError>
         TokenKind::Keyword(Keyword::Loop) => {
             tokens.next(); // Consume loop
 
-            let condition = Expression::Value(span.clone(), Value::Single(PrimitiveValue::Bool(true)));
+            let condition = Expression::Value(span.clone(), true.into());
             let statement = parse_statement(tokens)?;
 
             Ok(Statement::While{span, condition, statement: Box::new(statement) })

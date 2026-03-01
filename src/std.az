@@ -4,11 +4,32 @@ shape Object {}
 
 shape Math {
     
-    Add(int32 a, int32 b) -> int32 return a + b
-    Subtract(int32 a, int32 b) -> int32 return a - b
-    Multiply(int32 a, int32 b) -> int32 return a * b
-    Divide(int32 a, int32 b) -> int32 return a / b
-    Modulo(int32 a, int32 b) -> int32 return a % b
+    Add(int32 a, int32 b) -> int32 
+        return a + b
+    Sub(int32 a, int32 b) -> int32 
+        return a - b
+    Mul(int32 a, int32 b) -> int32 
+        return a * b
+    Div(int32 a, int32 b) -> int32 
+        return a / b
+    Mod(int32 a, int32 b) -> int32 
+        return a % b
+
+    Abs(int32 x) -> int32 
+        return (x > 0) ? x : -x
+    Max(int32 a, int32 b) -> int32 
+        return (a >= b) ? a : b
+    Min(int32 a, int32 b) -> int32 
+        return (a <= b) ? a : b
+    Clamp(int32 x, int32 min, int32 max) -> int32 
+        return Math.Max(min, Math.Min(max, x))
+    Sign(int32 x) -> int32 
+        return (x > 0) ? 1 : (x < 0) ? -1 : 0
+
+    IsEven(int32 x) -> bool
+        return x % 2 == 0
+    IsOdd(int32 x) -> bool
+        return x % 2 != 0
 
     Pow(int32 x, int32 exp) -> int32 {
         let res = 1

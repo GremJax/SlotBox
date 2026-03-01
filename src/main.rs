@@ -1,4 +1,5 @@
 use std::{collections::{HashMap, HashSet}, fs};
+use ordered_float::OrderedFloat;
 
 use crate::{
     analyzer::{AzimuthInfo, ObjectInfo, ResolvedShapeExpression, ResolvedStatement, ShapeInfo, Symbol, LocalId}, 
@@ -10,12 +11,15 @@ pub mod tokenizer;
 pub mod executor;
 pub mod analyzer;
 
+// Formerly SlotBox
+
 // Runtime Value
 #[derive(Default, Debug, Clone, Hash, PartialEq, Eq)]
 pub enum ValueKind {
     Int32,
     Float32,
-    uInt32,
+    UInt8,
+    Number,
     Bool,
     String,
     Shape(ShapeInstance),
@@ -32,14 +36,16 @@ pub enum ValueKind {
 }
 
 impl ValueKind {
-
     fn is_assignable_from(&self, other: ValueKind) -> bool {
         match self {
-            ValueKind::Int32 => other == ValueKind::Int32,
-            ValueKind::Float32 => other == ValueKind::Float32,
-            ValueKind::uInt32 => other == ValueKind::uInt32,
+            ValueKind::Int32 => other == ValueKind::Number || other.is_assignable_from(ValueKind::Number),
+            ValueKind::Float32 => other == ValueKind::Number || other.is_assignable_from(ValueKind::Number),
+            ValueKind::UInt8 => other == ValueKind::Number || other.is_assignable_from(ValueKind::Number),
+            ValueKind::Number => other == ValueKind::Number || other.is_assignable_from(ValueKind::Number),
+
             ValueKind::Bool => other == ValueKind::Bool,
             ValueKind::String => other == ValueKind::String,
+            
             ValueKind::Shape(k) => other == ValueKind::Shape(k.clone()),
             ValueKind::Array(k) => match other {
                 ValueKind::Array(other_k) => k.is_assignable_from(*other_k),
@@ -62,63 +68,93 @@ impl ValueKind {
 
 }
 
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub enum Number {
+    Int32(i32),
+    UInt8(u8),
+    Float32(OrderedFloat<f32>),
+    Any(i32),
+}
+
+impl Number {
+    fn to_i32(&self) -> i32 {
+        match self {
+            Number::Int32(val) => *val,
+            Number::Any(val) => *val,
+            Number::UInt8(val) => (*val).into(),
+            Number::Float32(val) => panic!("float not convertible to int")
+        }
+    }
+
+    fn kind(&self) -> ValueKind {
+        match self {
+            Number::Int32(_) => ValueKind::Int32,
+            Number::UInt8(_) => ValueKind::UInt8,
+            Number::Float32(_) => ValueKind::Float32,
+            Number::Any(_) => ValueKind::Number,
+        }
+    }
+}
+
 type GenericId = u8;
 
 #[derive(Default, Debug, Clone, Hash, PartialEq, Eq)]
-pub enum PrimitiveValue {
-    Int32(i32),
-    uInt32(u32),
+pub enum Value {
+    Number(Number),
     Bool(bool),
     String(String),
-    //ObjectId(ShapeInstance, ObjectId),
+
+    Array(Vec<Box<Value>>, ValueKind),
+    
     Azimuth(AzimuthState),
     Object(ObjectId, ValueKind),
     Local(LocalId, ValueKind),
     Pointer(ObjectId, AzimuthId, ValueKind),
     ArrayElement(ObjectId, AzimuthId, ValueKind, usize),
+
     Function(Box<Function>),
+
     #[default] None,
 }
 
-impl PrimitiveValue {
+impl Value {
     fn is(&self, kind: &ValueKind) -> bool { self.kind() == *kind }
 
     fn kind(&self) -> ValueKind {
         match self {
-            PrimitiveValue::Int32(_) => ValueKind::Int32,
-            PrimitiveValue::uInt32(_) => ValueKind::uInt32,
-            PrimitiveValue::Bool(_) => ValueKind::Bool,
-            PrimitiveValue::String(_) => ValueKind::String,
-            //PrimitiveValue::ObjectId(shape_id, _) => ValueKind::Shape(shape_id.clone()),
-            PrimitiveValue::Azimuth(s) => ValueKind::Azimuth(Box::new(s.value_type.clone())),
-            PrimitiveValue::Object(_, kind) => kind.clone(),
-            PrimitiveValue::Local(_, kind) => kind.clone(),
-            PrimitiveValue::Pointer(_, _, kind) => kind.clone(),
-            PrimitiveValue::ArrayElement(_, _, kind, _) => kind.clone(),
-            PrimitiveValue::Function(func) => 
+            Value::Number(num) => num.kind(),
+            Value::Bool(_) => ValueKind::Bool,
+            Value::String(_) => ValueKind::String,
+            Value::Array(_, value_type) => ValueKind::Array(Box::new(value_type.clone())),
+            Value::Azimuth(s) => ValueKind::Azimuth(Box::new(s.value_type.clone())),
+            Value::Object(_, kind) => kind.clone(),
+            Value::Local(_, kind) => kind.clone(),
+            Value::Pointer(_, _, kind) => kind.clone(),
+            Value::ArrayElement(_, _, kind, _) => kind.clone(),
+            Value::Function(func) => 
                 ValueKind::Function(Box::new(FunctionInfo{
                     has_self:func.has_self,
                     id:func.id, 
                     output_type:func.output_type.clone(),
                     input_types:func.input_types.iter().map(|param| param.kind.clone()).collect(),
                 })),
-            PrimitiveValue::None => ValueKind::None,
+            Value::None => ValueKind::None,
         }
     }
 }
 
-impl std::fmt::Display for PrimitiveValue {
+impl std::fmt::Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PrimitiveValue::Int32(val) =>
+            Value::Number(val) =>
+                write!(f, "{:?}", val),
+            Value::Bool(val) =>
                 write!(f, "{}", val),
-            PrimitiveValue::Bool(val) =>
+            Value::String(val) =>
                 write!(f, "{}", val),
-            PrimitiveValue::String(val) =>
-                write!(f, "{}", val),
-            PrimitiveValue::Object(id, shape) =>
+            Value::Object(id, shape) =>
                 write!(f, "Obj{}: {:?}", id, shape),
-            PrimitiveValue::Pointer(id, az, shape) =>
+            Value::Pointer(id, az, shape) =>
                 write!(f, "Obj{}.{}: {:?}", id, az, shape),
             val => 
                 write!(f, "{:?}", val),
@@ -174,52 +210,21 @@ pub struct Mapping {
     pub to: AzimuthId,
 }
 
-// Runtime Slot state
-#[derive(Default, Debug, Clone, Hash, PartialEq, Eq)]
-pub enum Value {
-    Single(PrimitiveValue),
-    Array(Vec<Box<Value>>, ValueKind),
-    #[default] Empty,
-}
-
-impl Value {
-    fn kind(&self) -> ValueKind {
-        match self {
-            Value::Single(k) => k.kind(),
-            Value::Array(_, value_type) => ValueKind::Array(Box::new(value_type.clone())),
-            Value::Empty => ValueKind::None,
-        }
-    }
-}
-
-impl std::fmt::Display for Value {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Value::Single(val) =>
-                write!(f, "{}", val),
-            Value::Array(val, _) =>
-                write!(f, "{:?}", val),
-            Value::Empty =>
-                write!(f, "Empty"),
-        }
-    }
-}
-
 impl From<bool> for Value {
     fn from(value: bool) -> Self {
-        Value::Single(PrimitiveValue::Bool(value))
+        Value::Bool(value)
     }
 }
 
 impl From<i32> for Value {
     fn from(value: i32) -> Self {
-        Value::Single(PrimitiveValue::Int32(value))
+        Value::Number(Number::Int32(value))
     }
 }
 
 impl From<String> for Value {
     fn from(value: String) -> Self {
-        Value::Single(PrimitiveValue::String(value))
+        Value::String(value)
     }
 }
 
@@ -370,7 +375,7 @@ impl Runtime {
     fn new() -> Self {
         let global = Object {
                 id: 0,
-                name: "global".to_string(),
+                name: format!("global"),
                 slot_mapping: Vec::new(),
                 slot_states: Vec::new(),
                 free_slots: Vec::new(),
@@ -760,8 +765,8 @@ impl Runtime {
         println!("Set obj{:?}.{:?} to {:?}", object.name, slot, value);
     }
 
-    fn set_slot_value_primitive(&mut self, object_id: ObjectId, slot: AzimuthId, value: PrimitiveValue) {
-        self.set_slot_value(object_id, slot, Value::Single(value));
+    fn set_slot_value_primitive(&mut self, object_id: ObjectId, slot: AzimuthId, value: Value) {
+        self.set_slot_value(object_id, slot, value);
     }
 
     fn set_slot_value_array(&mut self, object_id: ObjectId, slot: AzimuthId, values: Vec<Value>, kind: ValueKind) {

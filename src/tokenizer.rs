@@ -1,7 +1,6 @@
 use std::fmt;
 
 use crate::ValueKind;
-use crate::Value;
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum Operator {
@@ -100,7 +99,7 @@ pub struct Token {
     pub kind: TokenKind,
 }
 
-static WHITESPACE: &[char] = &[' ', '\t', ';'];
+static WHITESPACE: &[char] = &[' ', '\n', '\t', ';'];
 
 pub fn tokenize(input: &str) -> Vec<Token> {
     let mut tokens = Vec::new();
@@ -113,12 +112,12 @@ pub fn tokenize(input: &str) -> Vec<Token> {
         let span = Span{line, column};
 
         match ch {
-            ws if WHITESPACE.contains(&ws) => { chars.next(); },
             '\n' => {
                 chars.next();
                 line += 1;
                 column = 0;
             },
+            ws if WHITESPACE.contains(&ws) => { chars.next(); },
             '(' => {
                 tokens.push(Token{span, kind:TokenKind::LeftParen});
                 chars.next();
@@ -226,7 +225,9 @@ pub fn tokenize(input: &str) -> Vec<Token> {
                     "and" => TokenKind::Operator(Operator::And),
                     "or" => TokenKind::Operator(Operator::Or),
 
+                    "number" => TokenKind::Type(ValueKind::Number),
                     "int32" => TokenKind::Type(ValueKind::Int32),
+                    "byte" => TokenKind::Type(ValueKind::UInt8),
                     "bool" => TokenKind::Type(ValueKind::Bool),
                     "string" => TokenKind::Type(ValueKind::String),
                     "void" => TokenKind::Type(ValueKind::None),

@@ -60,7 +60,7 @@ print "__"
 let firstThing := Point
 print firstThing
 
-firstThing := Named
+firstThing := NamedChild
 print firstThing
 
 // comment :)
@@ -172,6 +172,11 @@ print thirdThing
 
 secondThing.PrintSomething()
 
+firstThing.PrintThing(16)
+
 print "Program successfully executed!"
 
-firstThing.PrintThing(16)
+let thingFour := Point
+seal thingFour
+thingFour =: Point
+print thingFour

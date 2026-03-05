@@ -1,5 +1,5 @@
 use crate::analyzer::LocalId;
-use crate::{Function, FunctionParameter};
+use crate::{Function, FunctionParameter, MappingTo};
 use crate::tokenizer::{Operator, Span};
 use crate::{
     Mapping, ObjectId, Number, Runtime, ShapeId, Value, ValueKind, executor,
@@ -92,22 +92,45 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
         },
 
         ResolvedExpression::BinaryOp { span, left, operator, right } => {
-            match (evaluate(runtime, *left)?, operator, evaluate(runtime, *right)?) { 
+            match (evaluate(runtime, *left)?, operator, right.kind()) { 
                 
                 // Bool - Bool
-                (Value::Bool(left), op, Value::Bool(right)) => 
+                (Value::Bool(left), op, ValueKind::Bool) => 
                     match op {
-                        Operator::Equal => Ok((left == right).into()),
-                        Operator::NEqual => Ok((left != right).into()),
-                        Operator::And => Ok((left && right).into()),
-                        Operator::Or => Ok((left || right).into()),
+                        Operator::Equal => {
+                            Ok((left == match evaluate(runtime, *right)? {
+                                Value::Bool(val) => val,
+                                _ => unreachable!()
+                            }).into())
+                        }
+                        Operator::NEqual => {
+                            Ok((left != match evaluate(runtime, *right)? {
+                                Value::Bool(val) => val,
+                                _ => unreachable!()
+                            }).into())
+                        }
+                        Operator::And => {
+                            Ok((left && match evaluate(runtime, *right)? {
+                                Value::Bool(val) => val,
+                                _ => unreachable!()
+                            }).into())
+                        }
+                        Operator::Or => {
+                            Ok((left || match evaluate(runtime, *right)? {
+                                Value::Bool(val) => val,
+                                _ => unreachable!()
+                            }).into())
+                        }
                         operator => Err(RuntimeError::InvalidOperator { span, operator, operand: ValueKind::Bool }),
                     },
                       
                 // Int - Int
-                (Value::Number(left), op, Value::Number(right)) => {
+                (Value::Number(left), op, r) if r.is_assignable_from(ValueKind::Number) => {
+                    let right = match evaluate(runtime, *right)? {
+                        Value::Number(val) => val,
+                        _ => unreachable!()
+                    }.to_i32();
                     let left = left.to_i32();
-                    let right = right.to_i32();
                     match op {
                         Operator::Equal => Ok((left == right).into()),
                         Operator::NEqual => Ok((left != right).into()),
@@ -139,7 +162,11 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
                 },
                     
                 // String - String
-                (Value::String(left), op, Value::String(right)) => 
+                (Value::String(left), op, ValueKind::String) => {
+                    let right = match evaluate(runtime, *right)? {
+                        Value::String(val) => val,
+                        _ => unreachable!()
+                    };
                     match op {
                         Operator::Equal => Ok((left == right).into()),
                         Operator::NEqual => Ok((left != right).into()),
@@ -147,7 +174,8 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
                         Operator::Add => Ok((left + &right).into()),
                         
                         operator => Err(RuntimeError::InvalidOperator { span, operator, operand: ValueKind::String }),
-                    },
+                    }
+                }
 
                 (left, op, right) => Err(RuntimeError::Error{ span, message: format!("Invalid operation: {:?} {:?} {:?}", left, op, right) })
             }
@@ -203,7 +231,7 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
 
             let func = match target {
                 Value::Function(func) => func,
-                other => return Err(RuntimeError::Error{span, message:format!("{:?} is not a function", other)}),
+                other => return Err(RuntimeError::Error{span, message:format!("{:?} is not a function or function chain", other)}),
             };
 
             let statement = &func.func;
@@ -402,18 +430,14 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
             Ok(ExecFlow::Normal(span))
         },
 
-        ResolvedStatement::Attach { span, object, shape} => {
-            match (evaluate(runtime, object)?, evaluate_shape(runtime, shape)) {
-                (Value::Object(object_id, _), ValueKind::Shape(shape_inst)) => 
-                    runtime.attach_shape(object_id, shape_inst),
-                (object, shape) => return Err(RuntimeError::Error{span, message:format!("Could not attach {:?} to {:?}", shape, object)})
-            }
-            Ok(ExecFlow::Normal(span))
-        },
-
         ResolvedStatement::Detach { span, object, shape } => {
             match (evaluate(runtime, object)?, evaluate_shape(runtime, shape)) {
-                (Value::Object(object_id, _), ValueKind::Shape(shape_inst)) => runtime.detach_shape(object_id, shape_inst),
+                (Value::Object(object_id, _), ValueKind::Shape(shape_inst)) => {
+                    let sealed = runtime.get_object(object_id).flags.sealed;
+                    if !sealed {
+                        runtime.detach_shape(object_id, shape_inst)
+                    }
+                }
                 (object, shape) => return Err(RuntimeError::Error{span, message:format!("Could not detach {:?} from {:?}", shape, object)})
             }
             Ok(ExecFlow::Normal(span))
@@ -421,23 +445,29 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
 
         ResolvedStatement::AddMapping { span, object, mapping } => {
             match (evaluate(runtime, object)?, mapping.from, mapping.to) {
-                (Value::Object(object_id, _), Symbol::Azimuth(from), Symbol::Azimuth(to))
-                    => runtime.remap_slot(object_id, to.id, from.id),
+                (Value::Object(object_id, _), Symbol::Azimuth(from), Symbol::Azimuth(to)) => {
+                        let sealed = runtime.get_object(object_id).flags.sealed;
+                        if !sealed {
+                            runtime.remap_slot(object_id, to.id, from.id)
+                        }
+                    }
                 (object, from, to) => return Err(RuntimeError::Error{span, message:format!("Invalid mapping: {:?}, {:?} -> {:?}", object, from, to)}),
             }
             Ok(ExecFlow::Normal(span))
         },
 
-        ResolvedStatement::AttachWithRemap { span, object, shape, mappings } => {
+        ResolvedStatement::Attach { span, object, shape, mappings } => {
             match (evaluate(runtime, object)?, evaluate_shape(runtime, shape)) {
                 (Value::Object(object_id, _), ValueKind::Shape(shape_inst)) => {
+                    let sealed = runtime.get_object(object_id).flags.sealed;
+                    if sealed { return Ok(ExecFlow::Normal(span)) }
                     
                     let mut remap = Vec::new();
                     for mapping in mappings {
                         match (mapping.from, mapping.to) {
                             (Symbol::Azimuth(from), Symbol::Azimuth(to)) => {
-                                remap.push(Mapping{from: from.id, to: to.id});
-                            }
+                                remap.push(Mapping{from: from.id, to: MappingTo::Single(to.id)});
+                            },
                             _ => todo!()
                         }
                     }
@@ -466,6 +496,18 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
                 other => return Err(RuntimeError::Error{span, message:format!("Could not assign {:?} to {:?}", val, other)}),
             }
             Ok(ExecFlow::Normal(span))
+        }
+        ResolvedStatement::Seal { span, target } => {
+            let name = target.get_name().clone();
+            let object = evaluate(runtime, target)?;
+
+            match object {
+                Value::Object(id, _) => {
+                    runtime.seal(id);
+                    Ok(ExecFlow::Normal(span))
+                },
+                _ => Err(RuntimeError::Error { span, message: format!("{} is not sealable", name) })
+            }
         }
 
         ResolvedStatement::If { span, condition, true_statement, else_statement } => {

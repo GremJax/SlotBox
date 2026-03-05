@@ -1,14 +1,13 @@
 use crate::executor::OBJECT_INSTANCE;
 use crate::tokenizer::{self, Keyword, Operator, Span, Token, TokenKind, UNARY_OPERATORS};
-use crate::{Function, ValueKind, Value};
-
-type Identifier = String;
+use crate::{AzimuthFlags, Function, Value, ValueKind};
 
 #[derive(Debug, Clone)]
 pub enum ParseError {
     Error { span: Span, message: String },
     UnexpectedToken { span: Span, token: TokenKind, loc: String },
     IncorrectToken { span: Span, token: TokenKind, expected: String, loc: String },
+    IllegalModifier { span: Span, illegal: String, conflict: String },
 }
 
 impl std::fmt::Display for ParseError {
@@ -22,9 +21,14 @@ impl std::fmt::Display for ParseError {
 
             ParseError::IncorrectToken { span, token, expected, loc } => 
                 write!(f, "{}: Incorrect token in {}: {:?}, expected {}", span, loc, token, expected),
+
+            ParseError::IllegalModifier { span, illegal, conflict } => 
+                write!(f, "{}: Azimuth can not be {} and {}", span, conflict, illegal),
         }
     }
 }
+
+type Identifier = String;
 
 #[derive(Debug, Clone)]
 enum Presence {
@@ -117,8 +121,8 @@ pub struct Mapping {
 pub struct RawAzimuth {
     pub name: Identifier,
     pub value_type: ShapeExpression,
-    pub is_static: bool,
-    pub set_value: Option<Expression>
+    pub set_value: Option<Expression>,
+    pub flags: crate::AzimuthFlags
 }
 
 #[derive(Debug, Clone)]
@@ -134,10 +138,9 @@ pub enum Statement {
     },
     DeclareObject { span: Span, name: Identifier, shape: ShapeExpression }, 
     DeclareLocal { span: Span, name: Identifier, value: Expression }, 
-    Attach { span: Span, object: Expression, shape: ShapeExpression },
     Detach { span: Span, object: Expression, shape: ShapeExpression },
     AddMapping { span: Span, object: Expression, mapping: Mapping },
-    AttachWithRemap { span: Span, object: Expression, shape: ShapeExpression, mappings: Vec<Mapping> },
+    Attach { span: Span, object: Expression, shape: ShapeExpression, mappings: Vec<Mapping> },
     Print { span: Span, expr: Expression },
     Expression { span: Span, expr: Expression },
     If {
@@ -159,6 +162,7 @@ pub enum Statement {
     },
     Assign { span: Span, target: Expression, value: Expression, },
     AssignAugmented { span: Span, target: Expression, value: Expression, operator: Operator },
+    Seal { span: Span, target: Expression },
     Block(Vec<Statement>),
 
     Break{ span: Span }, 
@@ -367,7 +371,7 @@ fn parse_shape_expression(tokens: &mut PeekableTokens) -> Result<ShapeExpression
     Ok(base)
 }
 
-fn parse_function(shape: ShapeExpression, is_static: bool, tokens: &mut PeekableTokens) -> Result<RawFunction, ParseError> {
+fn parse_function(shape: ShapeExpression, is_static: bool, flags: AzimuthFlags, tokens: &mut PeekableTokens) -> Result<RawFunction, ParseError> {
     tokens.next(); // Consume LParen
 
     let mut input_types = Vec::new();
@@ -412,6 +416,7 @@ fn parse_function(shape: ShapeExpression, is_static: bool, tokens: &mut Peekable
 
     // Expect arrow
     let token = tokens.peek().unwrap();
+    let span = token.span.clone();
     let output_type = if matches!(token.kind, TokenKind::Operator(Operator::Arrow)) {
         tokens.next(); // Consume arrow
         // Return type
@@ -419,7 +424,11 @@ fn parse_function(shape: ShapeExpression, is_static: bool, tokens: &mut Peekable
     } else { ShapeExpression::Primitive(ValueKind::None) };
 
     // Statement
-    let func = parse_statement(tokens)?;
+    let func = if flags.is_abstract {
+        Statement::Break { span }
+    } else {
+        parse_statement(tokens)?
+    };
 
     Ok(RawFunction{ has_self, input_types, output_type, func })
 }
@@ -465,9 +474,9 @@ fn parse_object_statement(span:Span, tokens: &mut PeekableTokens) -> Result<Stat
                     }
                 }
 
-                Ok(Statement::AttachWithRemap {span, object, shape, mappings })
+                Ok(Statement::Attach {span, object, shape, mappings })
             } else {
-                Ok(Statement::Attach {span, object, shape })
+                Ok(Statement::Attach {span, object, shape, mappings:Vec::new() })
             }
         }
 
@@ -673,6 +682,15 @@ fn parse_statement(tokens: &mut PeekableTokens) -> Result<Statement, ParseError>
                         _ => false
                     };
 
+                    // Locked
+                    let is_locked = match tokens.peek().unwrap().kind {
+                        TokenKind::Keyword(Keyword::Locked) => {
+                            tokens.next();
+                            true
+                        }
+                        _ => false
+                    };
+
                     // Const
                     let is_const = match tokens.peek().unwrap().kind {
                         TokenKind::Keyword(Keyword::Const) => {
@@ -691,15 +709,6 @@ fn parse_statement(tokens: &mut PeekableTokens) -> Result<Statement, ParseError>
                         _ => false
                     };
 
-                    // Locked
-                    let is_locked = match tokens.peek().unwrap().kind {
-                        TokenKind::Keyword(Keyword::Locked) => {
-                            tokens.next();
-                            true
-                        }
-                        _ => false
-                    };
-
                     // Slot name
                     let token = tokens.next().unwrap();
                     let slot_name = match token.kind {
@@ -710,8 +719,10 @@ fn parse_statement(tokens: &mut PeekableTokens) -> Result<Statement, ParseError>
                     // Function check
                     if matches!(tokens.peek().unwrap().kind, TokenKind::LeftParen) {
                         
+                        let flags = crate::AzimuthFlags { is_static:true, is_abstract, is_const, is_locked };
+
                         // Function
-                        let func = parse_function(ShapeExpression::Shape(shape_identifier.clone()), is_static, tokens)?;
+                        let func = parse_function(ShapeExpression::Shape(shape_identifier.clone()), is_static, flags.clone(), tokens)?;
                         let value_type = ShapeExpression::Function{func:Box::new(func.clone())};
                         
                         let func_expr = Expression::Function{ 
@@ -725,11 +736,14 @@ fn parse_statement(tokens: &mut PeekableTokens) -> Result<Statement, ParseError>
                         slot_ids.push(RawAzimuth { 
                             name: slot_name, 
                             value_type,
-                            is_static: true, 
+                            flags, 
                             set_value: Some(func_expr), 
                         });
                         continue;
                     }
+                    
+                    // Flags
+                    let flags = crate::AzimuthFlags { is_static, is_abstract, is_const, is_locked };
 
                     // Type
                     let value_type = parse_shape_expression(tokens)?;
@@ -743,7 +757,7 @@ fn parse_statement(tokens: &mut PeekableTokens) -> Result<Statement, ParseError>
                         _ => None
                     };
 
-                    slot_ids.push(RawAzimuth { name: slot_name, value_type, is_static, set_value });
+                    slot_ids.push(RawAzimuth { name: slot_name, value_type, flags, set_value });
                 }
             } else {
                 return Err(ParseError::IncorrectToken{span, token:token.kind, expected:format!("{{"), loc:format!("shape declaration")});
@@ -779,6 +793,12 @@ fn parse_statement(tokens: &mut PeekableTokens) -> Result<Statement, ParseError>
                     Ok(Statement::DeclareObject {span, name: object_identifier, shape:ShapeExpression::Primitive(ValueKind::Shape(OBJECT_INSTANCE)) })
                 }
             }
+        },
+        
+        // seal
+        TokenKind::Keyword(Keyword::Seal) => {
+            tokens.next(); // consume 'seal' keyword
+            Ok(Statement::Seal{span, target: parse_expression(tokens)?})
         },
 
         // print

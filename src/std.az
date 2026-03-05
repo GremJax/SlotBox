@@ -16,7 +16,7 @@ shape Math {
         return a % b
 
     static Abs(int32 x) -> int32 
-        return (x > 0) ? x : -x
+        return (x >= 0) ? x : -x
     static Max(int32 a, int32 b) -> int32 
         return (a >= b) ? a : b
     static Min(int32 a, int32 b) -> int32 
@@ -41,15 +41,15 @@ shape Math {
 }
 
 shape Comparable<T> {
-    Compare(T other) -> int32 return 0
+    abstract Compare(T other) -> int32
 }
 
 shape Equatable<T> {
-    Equate(T other) -> bool return false
+    abstract Equate(T other) -> bool
 }
 
 shape Hashable {
-    Hash() -> uint64 return 0
+    abstract Hash() -> uint64
 }
 
 shape Int32 {

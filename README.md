@@ -77,24 +77,29 @@ Functions are written just like any other azimuth, but with parenthesis followin
         print x
     }
 
-Functions are all static, so the first argument of a function must be "self" for the function to access an object's values. The self object will always have the shape declaring the function.
+Functions are non-static implicitly and can be made static with the "static" keyword. Adding "self" as the first parameter makes it into a static function acting upon the caller as "self", which is the exact explicit form of the first pattern.
 
-    PrintName(self) {
-        print self.Name
-    }
+    shape Foo {
 
-    PrintNameOrFoo(self, x bool) {
-        if x
-            print self.Name
-        else print "foo"
+        DoSomething() {
+            print self
+        }
+
+        static DoSomething() {
+            print "static"
+        }
+
+        static DoSomething(self) {
+            print self
+        }
     }
 
 Functions can be given a return type. Functions must then return the appropriate type within the function statement.
 
-    GetName(self) -> string
+    GetName() -> string
         return self.Name
 
-    PrintNameAndReturn(self) -> string {
+    PrintNameAndReturn() -> string {
         print self.Name
         return self.GetName()
     }
@@ -186,6 +191,21 @@ Any object that is attached ChildOfFoo will also be attached Foo first, with all
 
     }
 
+You can also map functions for chaining and overrides
+
+    shape ChildOfFoo : Foo(
+        SuperPrint -> after Foo::Print
+        Foo::Something -> OverriddenThing
+    ) {
+        OverriddenThing() -> {
+            print "this is an override"
+        }
+
+        SuperPrint() -> {
+            print "hello"
+        }
+    }
+
 Azimuths can be locked, which makes it impossible to detach them even if the shape is detached. They can also be declared static, which applies them to the shape's static singleton and accessed through the shape name directly. They can also be declared const, which makes their value immutable
 
     shape Foo {
@@ -210,23 +230,6 @@ The "attach" and "detach" keywords are special functions called on an object whe
 
         detach() {
             print "detached"
-        }
-    }
-
-Functions are non-static implicitly and can be made static with the "static" keyword. Adding "self" as the first parameter makes it into a static function acting upon the caller as "self", which is the exact explicit form of the first pattern.
-
-    shape Foo {
-
-        DoSomething() {
-            print self
-        }
-
-        static DoSomething() {
-            print "static"
-        }
-
-        static DoSomething(self) {
-            print self
         }
     }
 
@@ -299,11 +302,11 @@ There are times when there are identifiers with the same name on an object. This
 Multiple functions can be assigned to the same azimuth using the keywords "before" and "after" which will cause them to execute in a chain. This is how super/base overrides work, but also how you can attach additional functionality onto single functions.
 
     x := Printable
-    x := Testing (
+    x := Benchmarking (
         Benchmark -> before Printable::Print
     )
 
-You can also "hijack" functions by attaching shapes to them directly
+You can also "hijack" functions by attaching shapes to them directly with a reflection
 
     x := Printable
     x.Print := Benchmark (
@@ -322,6 +325,29 @@ To change the mapping, simply attach again. Unmodified mappings will be ignored,
         X -> Height
         Y -> Width
     )
+
+Mappings can go either way from the corresponding shapes, and types are resolved by the base owner of the data.
+
+    shape FloatThing {
+        Value float32
+    }
+
+    shape IntThing {
+        Value int32
+    }
+
+    object := FloatThing
+    object := IntThing {
+        Value -> FloatThing::Value  // Int in terms of float
+    }
+
+    print object.Value  // Value is a float
+
+    object := FloatThing {
+        Value -> IntThing::Value    // Float in terms of int
+    }
+
+    print object.Value  // Value is an int
 
 Objects can be sealed using the "seal" keyword to prevent any additional attachments or detachments. This is important for safety or critical operations. Modified objects will need to be an unsealed copy. Attempting to attach or detach to the object will cause a runtime error. Sealing an array also seals every member of the array.
 

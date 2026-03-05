@@ -1,6 +1,6 @@
 use std::{collections::HashMap, fs};
 
-use crate::{AzimuthId, FunctionInfo, GenericId, Number, ObjectId, ShapeId, Value, ValueKind, analyzer, executor::{self, OBJECT_INSTANCE, ShapeInstance}, parser::{self, Mapping}, tokenizer::{self, Span}}; 
+use crate::{AzimuthFlags, AzimuthId, FunctionInfo, GenericId, Number, ObjectId, ShapeId, Value, ValueKind, analyzer, executor::{self, OBJECT_INSTANCE, ShapeInstance}, parser::{self, Mapping}, tokenizer::{self, Span}}; 
 use parser::{RawAzimuth, Expression, Statement, ShapeExpression};
 use tokenizer::{Operator};
 
@@ -72,7 +72,7 @@ pub struct ShapeInfo {
 pub struct AzimuthInfo {
     pub id: AzimuthId,
     pub name: Identifier,
-    pub is_static: bool,
+    pub flags: AzimuthFlags,
     pub shape_id: ShapeId,
     pub default_value: Box<Option<ResolvedExpression>>,
     pub value_type: ValueKind,
@@ -108,6 +108,16 @@ pub enum Symbol {
 }
 
 impl Symbol {
+    fn get_name(&self) -> String {
+        match self {
+            Symbol::Shape(info) => info.name.clone(),
+            Symbol::Object(info) => info.name.clone(),
+            Symbol::Azimuth(info) => info.name.clone(),
+            Symbol::Generic(info) => info.name.clone(),
+            Symbol::Local(info) => info.name.clone(),
+        }
+    }
+    
     fn kind(&self) -> ValueKind {
         match self {
             Symbol::Shape(info) => ValueKind::Shape(ShapeInstance{id: info.id, generics: Vec::new()}),
@@ -117,6 +127,19 @@ impl Symbol {
             Symbol::Local(info) => info.known_shapes.first().unwrap().clone(),
         }
     }
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+enum SymbolId {
+    Identifier(String),
+    Azimuth {
+        name: String,
+        clarifier: Option<String>,
+    },
+    Shape{
+        name: String,
+        namespace: String,
+    },
 }
 
 type ScopeId = u32;
@@ -148,10 +171,9 @@ pub enum ResolvedStatement {
     DeclareShape { span: Span, symbol: Symbol, azimuths: Vec<Symbol> },
     DeclareObject { span: Span, symbol: Symbol, shape: ResolvedShapeExpression },
     DeclareLocal { span: Span, symbol: Symbol, value: ResolvedExpression },
-    Attach { span: Span, object: ResolvedExpression, shape: ResolvedShapeExpression, },
     Detach { span: Span, object: ResolvedExpression, shape: ResolvedShapeExpression },
     AddMapping { span: Span, object: ResolvedExpression, mapping: ResolvedMapping },
-    AttachWithRemap { span: Span, object: ResolvedExpression, shape: ResolvedShapeExpression, mappings: Vec<ResolvedMapping>, },
+    Attach { span: Span, object: ResolvedExpression, shape: ResolvedShapeExpression, mappings: Vec<ResolvedMapping>, },
     Print { span: Span, expr: ResolvedExpression },
     Expression { span: Span, expr: ResolvedExpression },
     If {
@@ -172,6 +194,7 @@ pub enum ResolvedStatement {
         statement: Box<ResolvedStatement>,
     },
     Assign { span: Span, target: ResolvedExpression, value: ResolvedExpression },
+    Seal { span: Span, target: ResolvedExpression, },
     Block(Vec<ResolvedStatement>),
     Break{ span: Span, }, 
     Continue{ span: Span, }, 
@@ -202,7 +225,7 @@ impl ResolvedShapeExpression {
             }),
             ResolvedShapeExpression::Primitive(kind) => kind.clone(),
             ResolvedShapeExpression::Array(expr) => ValueKind::Array(Box::new(expr.kind())),
-            other => todo!()
+            _ => unreachable!()
         }
     }
 }
@@ -255,6 +278,27 @@ pub enum ResolvedExpression {
 }
 
 impl ResolvedExpression {
+    pub fn get_name(&self) -> String {
+        match self {
+            ResolvedExpression::Variable(_, symbol) => symbol.get_name(),
+            ResolvedExpression::MemberAccess { member, target, .. } => format!("{}.{}", target.get_name(), member.get_name()),
+            ResolvedExpression::ArrayAccess { target, index, .. } => format!("{}[{}]", target.get_name(), index.get_name()),
+            other => format!("{:?}", other.kind()),
+        }
+    }
+
+    pub fn is_assignable(&self) -> bool {
+        match self {
+            ResolvedExpression::Variable(_, symbol) => true,
+            ResolvedExpression::MemberAccess { member, .. } => match member {
+                Symbol::Azimuth(info) => !info.flags.is_const,
+                _ => false
+            },
+            ResolvedExpression::ArrayAccess { target, .. } => true,
+            _ => false
+        }
+    }
+
     pub fn kind(&self) -> ValueKind {
         match self {
             ResolvedExpression::Value(_, value) => value.kind(),
@@ -270,11 +314,11 @@ impl ResolvedExpression {
             ResolvedExpression::MemberAccess { member, .. } => member.kind(),
             ResolvedExpression::ArrayAccess { target, .. } => match target.kind() {
                 ValueKind::Array(value_type) => *value_type.clone(),
-                _ => todo!()
+                _ => unreachable!()
             }
             ResolvedExpression::FunctionCall { target, .. } => match target.kind() {
                 ValueKind::Function(info) => info.output_type.clone(),
-                _ => todo!()
+                _ => unreachable!()
             }
             ResolvedExpression::Function { output_type, .. } => output_type.kind(),
         }
@@ -407,10 +451,10 @@ impl Analyzer {
                 name: azimuth.name.clone(),
                 shape_id: id,
                 default_value: Box::new(None),//Box::new(default_value),
-                is_static: azimuth.is_static,
+                flags: azimuth.flags.clone(),
                 value_type: ValueKind::None,//self.resolve_shape_expression(azimuth.value_type, scope)?.kind(),
             });
-            if azimuth.is_static { has_static = true; }
+            if azimuth.flags.is_static { has_static = true; }
             az_ids.push(az_id);
             az_symbols.push(symbol);
             az_id += 1;
@@ -833,6 +877,19 @@ impl Analyzer {
         Ok(ResolvedMapping{from, to})
     }
 
+    pub fn get_azimuth_with_id(&self, scope:ScopeId, id:AzimuthId) -> Option<&AzimuthInfo> {
+        for symbol in self.get_scope(scope).symbols.values() {
+            match symbol {
+                // Match found
+                Symbol::Azimuth(info) if info.id == id => {
+                    return Some(info)
+                }
+                _ => continue,
+            }
+        }
+        None
+    }
+
     pub fn resolve_statement(&mut self, statement:Statement, scope:ScopeId) -> Result<ResolvedStatement,CompileError> {
         match statement {
             Statement::Expression {span, expr} => Ok(ResolvedStatement::Expression{span, expr:self.resolve_expression(expr, scope)?}),
@@ -879,14 +936,6 @@ impl Analyzer {
                 let symbol = self.declare_local(scope, name, kind);
                 Ok(ResolvedStatement::DeclareLocal{ span, symbol: symbol.clone(), value })
             }
-            Statement::Attach { span, object, shape } => {
-                let shape = self.resolve_shape_expression(shape, scope)?;
-
-                Ok(ResolvedStatement::Attach{ span, 
-                    object: self.resolve_expression(object, scope)?, 
-                    shape,
-                })
-            }
             Statement::Detach { span, object, shape } => {
                 let shape = self.resolve_shape_expression(shape, scope)?;
 
@@ -900,18 +949,50 @@ impl Analyzer {
                     object: self.resolve_expression(object, scope)?, 
                     mapping: self.resolve_mapping(span, mapping, scope)?,
                 }),
-            Statement::AttachWithRemap { span, object, shape, mappings } => {
+            Statement::Attach { span, object, shape, mappings } => {
                 let mut resolved_mappings = Vec::new();
                 for mapping in mappings {
                     resolved_mappings.push(self.resolve_mapping(span.clone(), mapping, scope)?);
                 }
-                Ok(ResolvedStatement::AttachWithRemap{ span, 
+
+                // Validate abstract
+                let shape = self.resolve_shape_expression(shape, scope)?;
+                let (azimuths, defaults) = match &shape {
+                    ResolvedShapeExpression::Simple(Symbol::Shape(info)) => (info.azimuths.clone(), info.mappings.clone()),
+                    _ => (Vec::new(), Vec::new()),
+                };
+                for id in azimuths {
+                    // Find az with id
+                    if let Some(found) = self.get_azimuth_with_id(scope, id) {
+                        if found.flags.is_abstract {
+                            match defaults.iter().find(|mapping| matches!(&mapping.from, Symbol::Azimuth(info) if info.id == id)) {
+                                Some(_) => continue,
+                                None => {}
+                            }
+                            match resolved_mappings.iter().find(|mapping| matches!(&mapping.from, Symbol::Azimuth(info) if info.id == id)) {
+                                Some(_) => continue,
+                                None => return Err(CompileError::Error { span, message:format!("Abstract attached without mapping") })
+                            }
+                        }
+                    }
+                }
+
+                Ok(ResolvedStatement::Attach{ span, 
                     object: self.resolve_expression(object, scope)?, 
-                    shape: self.resolve_shape_expression(shape, scope)?, 
+                    shape,
                     mappings: resolved_mappings,
                 })
             },
             Statement::Print { span, expr } => Ok(ResolvedStatement::Print{span, expr: self.resolve_expression(expr, scope)?}),
+            Statement::Seal { span, target } => {
+                let target = self.resolve_expression(target, scope)?;
+                match target.kind() {
+                    ValueKind::Shape(_) => {},
+                    _ => return Err(CompileError::Error { span, message: format!("{} ({:?}) is not sealable", target.get_name(), target.kind()) })
+                }
+
+                Ok(ResolvedStatement::Seal{span, target})
+            }
             Statement::If { span, condition, true_statement, else_statement } => {
                 let resolved_condition = self.resolve_expression(condition, scope)?;
                 if resolved_condition.kind() != ValueKind::Bool {
@@ -960,6 +1041,11 @@ impl Analyzer {
 
             Statement::Assign {span, target, value } => {
                 let target = self.resolve_expression(target, scope)?;
+
+                if !target.is_assignable() {
+                    return Err(CompileError::Error { span, message:format!("{:?} is not assignable", target.get_name()) })
+                }
+
                 let value = self.resolve_expression(value, scope)?;
 
                 if !target.kind().is_assignable_from(value.kind()) {
@@ -971,6 +1057,11 @@ impl Analyzer {
             
             Statement::AssignAugmented {span, target, value, operator } => {
                 let target = self.resolve_expression(target, scope)?;
+
+                if !target.is_assignable() {
+                    return Err(CompileError::Error { span, message:format!("{:?} is not assignable", target) })
+                }
+
                 let value = self.resolve_expression(value, scope)?;
 
                 // Ensure int types

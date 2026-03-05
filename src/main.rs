@@ -1,9 +1,9 @@
-use std::{collections::{HashMap, HashSet}, fs};
+use std::{collections::{HashMap}, fs};
 use ordered_float::OrderedFloat;
 
 use crate::{
-    analyzer::{AzimuthInfo, ObjectInfo, ResolvedShapeExpression, ResolvedStatement, ShapeInfo, Symbol, LocalId}, 
-    executor::{RuntimeError, ShapeInstance}, parser::ShapeExpression
+    analyzer::{AzimuthInfo, LocalId, ObjectInfo, ResolvedExpression, ResolvedStatement, ShapeInfo, Symbol}, 
+    executor::{RuntimeError, ShapeInstance},
 };
 
 pub mod parser;
@@ -27,12 +27,13 @@ pub enum ValueKind {
     Array(Box<ValueKind>),
     Azimuth(Box<ValueKind>),
     Option(Box<ValueKind>),
-    Object(ObjectId, Box<ValueKind>),
-    Local(LocalId, Box<ValueKind>),
-    Pointer(ObjectId, AzimuthId, Box<ValueKind>),
+    Object(Box<ValueKind>),
+    Local(Box<ValueKind>),
+    Pointer(Box<ValueKind>),
     ArrayElement(Box<ValueKind>),
     Function(Box<FunctionInfo>),
     Generic(GenericId),
+    Multiple(Vec<ValueKind>),
     #[default] None
 }
 
@@ -57,13 +58,17 @@ impl ValueKind {
                 ValueKind::Azimuth(other_k) => k.is_assignable_from(*other_k),
                 _ => false,
             },
-            ValueKind::Option(k) => k.is_assignable_from(other),
-            ValueKind::Object(_, k) => k.is_assignable_from(other),
-            ValueKind::Local(_, k) => k.is_assignable_from(other),
-            ValueKind::Pointer(_, _, k) => k.is_assignable_from(other),
+            ValueKind::Object(k) => k.is_assignable_from(other),
+            ValueKind::Local(k) => k.is_assignable_from(other),
+            ValueKind::Pointer(k) => k.is_assignable_from(other),
             ValueKind::ArrayElement(k) => k.is_assignable_from(other),
+
             ValueKind::Function(info) => other == ValueKind::Function(info.clone()),
+
+            ValueKind::Option(k) => k.is_assignable_from(other),
             ValueKind::Generic(_) => true,
+            ValueKind::Multiple(kinds) => kinds.iter().any(|kind| kind.is_assignable_from(other.clone())),
+
             ValueKind::None => other == ValueKind::None,
         }
     }
@@ -118,6 +123,7 @@ pub enum Value {
     ArrayElement(ObjectId, AzimuthId, ValueKind, usize),
 
     Function(Box<Function>),
+    FunctionChain(Vec<AzimuthId>, FunctionInfo),
 
     #[default] None,
 }
@@ -143,6 +149,7 @@ impl Value {
                     output_type:func.output_type.clone(),
                     input_types:func.input_types.iter().map(|param| param.kind.clone()).collect(),
                 })),
+            Value::FunctionChain(_, info) => ValueKind::Function(Box::new(info.clone())),
             Value::None => ValueKind::None,
         }
     }
@@ -200,7 +207,15 @@ pub struct Azimuth {
     id: AzimuthId,
     name: String,
     value_type: ValueKind,
+    flags: AzimuthFlags,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct AzimuthFlags {
     is_static: bool,
+    is_abstract: bool,
+    is_locked: bool,
+    pub(crate) is_const: bool,
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
@@ -209,10 +224,17 @@ pub struct AzimuthState {
     value_type: ValueKind,
 }
 
-#[derive(Default, Debug, Clone)]
+#[derive(Debug, Clone)]
+pub enum MappingTo {
+    Single(AzimuthId),
+    Chain(Vec<AzimuthId>),
+    Expression(ResolvedExpression),
+}
+
+#[derive(Debug, Clone)]
 pub struct Mapping {
     pub from: AzimuthId,
-    pub to: AzimuthId,
+    pub to: MappingTo,
 }
 
 impl From<bool> for Value {
@@ -256,13 +278,13 @@ pub struct Shape {
 
 impl Shape {
     fn define_slot(&mut self, id: AzimuthId, name: String, 
-        kind: ValueKind, is_static: bool) -> Azimuth {
+        kind: ValueKind, flags: AzimuthFlags) -> Azimuth {
         let slot = Azimuth {
             shape_id: self.id,
             id: id.clone(),
             name: format!("{}.{}", self.name, name),
             value_type: kind,
-            is_static,
+            flags,
         };
         self.azimuths.push(id);
         slot
@@ -281,9 +303,16 @@ impl Shape {
 pub type ObjectId = u32;
 
 #[derive(Debug, Clone)]
+pub struct ObjectFlags {
+    sealed: bool,
+}
+
+#[derive(Debug, Clone)]
 pub struct Object {
     id: ObjectId,
     name: String,
+
+    flags: ObjectFlags,
 
     slot_mapping: Vec<(AzimuthState, SlotStateId)>,
     slot_states: Vec<SlotState>,
@@ -381,6 +410,9 @@ impl Runtime {
         let global = Object {
                 id: 0,
                 name: format!("global"),
+                flags: ObjectFlags {
+                    sealed: true,
+                },
                 slot_mapping: Vec::new(),
                 slot_states: Vec::new(),
                 free_slots: Vec::new(),
@@ -403,6 +435,9 @@ impl Runtime {
         let object = Object {
             id: info.id,
             name: info.name,
+            flags: ObjectFlags {
+                sealed: false,
+            },
             slot_mapping: Vec::new(),
             slot_states: Vec::new(),
             free_slots: Vec::new(),
@@ -454,11 +489,11 @@ impl Runtime {
             name: info.name,
             value_type: info.value_type.clone(),
             shape_id: info.shape_id,
-            is_static: info.is_static,
+            flags: info.flags.clone(),
         };
         self.azimuths.push(azimuth);
 
-        if info.is_static {
+        if info.flags.is_static {
             // Allocate static slot
             let static_object_id = self.get_shape(info.shape_id).static_object_id.clone();
 
@@ -558,6 +593,9 @@ impl Runtime {
     }
 
     fn detach_slot(&mut self, object_id: ObjectId, slot: AzimuthId) {
+        // Do not detach locked slot
+        if self.get_azimuth(slot).flags.is_locked { return }
+
         let object = self.get_object_mut(object_id);
 
         if let Some(state_id) = object.remove_azimuth(slot) {
@@ -602,7 +640,7 @@ impl Runtime {
 
         for id in azimuths {
             let azimuth = self.get_azimuth(id);
-            if azimuth.is_static { continue; }
+            if azimuth.flags.is_static { continue; }
 
             let generic_type = match azimuth.value_type {
                 ValueKind::Generic(generic) => {
@@ -650,7 +688,7 @@ impl Runtime {
 
         for az_id in azimuths {
             let azimuth = self.get_azimuth(az_id);
-            if azimuth.is_static { continue; }
+            if azimuth.flags.is_static { continue; }
 
             let generic_type = match azimuth.value_type {
                 ValueKind::Generic(generic) => {
@@ -660,9 +698,16 @@ impl Runtime {
             };
 
             if let Some(remapped) =
-                remap.iter().find(|m| m.from == az_id).map(|m| m.to)
+                remap.iter().find(|m| m.from == az_id).map(|m| m.to.clone())
             {
-                self.attach_slot_remap_generic(object_id, az_id, Some(remapped), generic_type);
+                match remapped {
+                    MappingTo::Single(az) => self.attach_slot_remap_generic(object_id, az_id, Some(az), generic_type),
+                    MappingTo::Chain(chain) => todo!(),
+                    MappingTo::Expression(expr) => {
+                        let to = executor::evaluate_place(self, expr).unwrap();
+                        todo!()
+                    }
+                }
             } else {
                 self.attach_slot_generic(object_id, az_id, generic_type);
             }
@@ -719,7 +764,7 @@ impl Runtime {
         let shape = self.get_shape(shape_id);
 
         shape.azimuths.iter().map(|id| self.get_azimuth(*id)).all(|slot| {
-            if slot.is_static {
+            if slot.flags.is_static {
                 let static_object = self.get_object(shape.static_object_id);
                 object.has_azimuth(slot.id) || static_object.has_azimuth(slot.id)
             } else {
@@ -738,7 +783,7 @@ impl Runtime {
 
         // Static
         let azimuth = self.get_azimuth(slot);
-        if azimuth.is_static {
+        if azimuth.flags.is_static {
             let static_id = self.get_shape(azimuth.shape_id).static_object_id.clone();
             if static_id == object_id { return None; }
             
@@ -787,6 +832,16 @@ impl Runtime {
         } else {
             panic!("Slot does not contain an array");
         }
+    }
+
+    fn seal(&mut self, object_id: ObjectId) {
+        let object = self.get_object_mut(object_id);
+        object.flags.sealed = true;
+    }
+
+    fn unseal(&mut self, object_id: ObjectId) {
+        let object = self.get_object_mut(object_id);
+        object.flags.sealed = false;
     }
 
     fn print_object(&self, object_id: ObjectId) {

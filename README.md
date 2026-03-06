@@ -65,6 +65,10 @@ Array indexing is done with brackets.
     print x[i]
     x[i + 1] = 5
 
+String formats are also easy as pie with breakout brackets: "\\{ }"
+
+    print "Hello my name is \{person.name}!"
+
 ### Functions
 
 Functions are written just like any other azimuth, but with parenthesis following the name with a number of parameters and their types. Then, an optional arrow with a return type, and the code to be executed.

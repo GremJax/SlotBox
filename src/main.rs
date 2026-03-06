@@ -77,21 +77,77 @@ impl ValueKind {
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum Number {
+    Int8(i8),
+    Int16(i16),
     Int32(i32),
+    Int64(i64),
     UInt8(u8),
+    UInt16(u16),
+    UInt32(u32),
     UInt64(u64),
     Float32(OrderedFloat<f32>),
-    Any(i32),
+    Float64(OrderedFloat<f64>),
+    Any(OrderedFloat<f64>),
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum NumKind {
+    UInt8,
+    UInt16,
+    UInt32,
+    UInt64,
+    Int8,
+    Int16,
+    Int32,
+    Int64,
+    Float32,
+    Float64,
 }
 
 impl Number {
+    fn num_kind(&self) -> NumKind {
+        match self {
+            Number::UInt8(_) => NumKind::UInt8,
+            Number::UInt16(_) => NumKind::UInt16,
+            Number::UInt32(_) => NumKind::UInt32,
+            Number::UInt64(_) => NumKind::UInt64,
+            Number::Int8(_) => NumKind::Int8,
+            Number::Int16(_) => NumKind::Int16,
+            Number::Int32(_) => NumKind::Int32,
+            Number::Int64(_) => NumKind::Int64,
+            Number::Float32(_) => NumKind::Float32,
+            Number::Float64(_) => NumKind::Float64,
+            _ => todo!()
+        }
+    }
+
     fn to_i32(&self) -> i32 {
         match self {
             Number::Int32(val) => *val,
-            Number::Any(val) => *val,
             Number::UInt8(val) => (*val).into(),
             Number::UInt64(val) => panic!("long not convertible to int"),
             Number::Float32(val) => panic!("float not convertible to int"),
+            num => panic!("{:?} not convertible to int", num),
+        }
+    }
+
+    fn promote_kind(a: NumKind, b: NumKind) -> NumKind {
+        use NumKind::*;
+
+        match (a, b) {
+            (Float64, _) | (_, Float64) => Float64,
+            (Float32, _) | (_, Float32) => Float32,
+
+            (UInt64, _) | (_, UInt64) => UInt64,
+            (Int64, _) | (_, Int64) => Int64,
+
+            (UInt32, _) | (_, UInt32) => UInt32,
+            (Int32, _) | (_, Int32) => Int32,
+
+            (UInt16, _) | (_, UInt16) => UInt16,
+            (Int16, _) | (_, Int16) => Int16,
+
+            _ => a.max(b),
         }
     }
 
@@ -102,6 +158,7 @@ impl Number {
             Number::UInt64(_) => ValueKind::UInt64,
             Number::Float32(_) => ValueKind::Float32,
             Number::Any(_) => ValueKind::Number,
+            _ => todo!()
         }
     }
 }
@@ -566,7 +623,8 @@ impl Runtime {
         let object = self.get_object_mut(object_id);
 
         if object.has_azimuth(azimuth_id) {
-            panic!("Slot already attached to object");
+            return
+            //panic!("Slot already attached to object");
         }
 
         // Check for present slot mappings
@@ -879,7 +937,10 @@ fn main() {
         Err(_) => panic!("Could not find main.az"),
     };
 
-    let tokens = tokenizer::tokenize(&source);
+    let tokens = match tokenizer::tokenize(&source){
+        Ok(tokens) => tokens,
+        Err(error) => panic!("Could not parse main.az:\n{}", error),
+    };
 
     let ast = match parser::parse(tokens) {
         Ok(ast) => ast,

@@ -5,6 +5,7 @@ use crate::{AzimuthFlags, Function, Value, ValueKind};
 #[derive(Debug, Clone)]
 pub enum ParseError {
     Error { span: Span, message: String },
+    InvalidToken { span: Span, token: String },
     UnexpectedToken { span: Span, token: TokenKind, loc: String },
     IncorrectToken { span: Span, token: TokenKind, expected: String, loc: String },
     IllegalModifier { span: Span, illegal: String, conflict: String },
@@ -15,6 +16,9 @@ impl std::fmt::Display for ParseError {
         match self {
             ParseError::Error { span, message } =>
                 write!(f, "{}: {}", span, message),
+                
+            ParseError::InvalidToken { span, token } =>
+                write!(f, "{}: invalid token: {}", span, token),
 
             ParseError::UnexpectedToken { span, token, loc } => 
                 write!(f, "{}: Unexpected token in {}: {:?}", span, loc, token),
@@ -39,6 +43,7 @@ enum Presence {
 #[derive(Debug, Clone)]
 pub enum Expression {
     Value(Span, Value),
+    StringFormat(Span, Vec<Expression>),
     Array(Span, Vec<Expression>, Option<ValueKind>),
     Variable(Span, Identifier),
     Option(Span, Box<Option<Expression>>),
@@ -187,6 +192,29 @@ fn parse_expression(tokens: &mut PeekableTokens) -> Result<Expression, ParseErro
         TokenKind::Number(num) => Expression::Value(span, (num as i32).into()),
         TokenKind::Bool(b) => Expression::Value(span, b.into()),
         TokenKind::String(s) => Expression::Value(span, s.into()),
+
+        TokenKind::StringFormat(s) => {
+            let mut expressions = Vec::new();
+            expressions.push(Expression::Value(span.clone(), s.into()));
+
+            while let Some(token) = tokens.peek() {
+                let span = token.span.clone();
+                match token.kind.clone() {
+                    TokenKind::String(s) => {
+                        tokens.next();
+                        expressions.push(Expression::Value(span, (s.clone()).into()));
+                        break;
+                    }
+                    TokenKind::StringFormat(s) => {
+                        tokens.next();
+                        expressions.push(Expression::Value(span, (s.clone()).into()));
+                    }
+                    _ => expressions.push(parse_expression(tokens)?),
+                }
+            }
+
+            Expression::StringFormat(span, expressions)
+        }
 
         TokenKind::Identifier(identifier) => Expression::Variable(span, identifier),
         TokenKind::Keyword(Keyword::PSelf) => Expression::Variable(span, format!("self")),

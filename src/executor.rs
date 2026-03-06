@@ -58,6 +58,18 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
         },
         ResolvedExpression::Variable(_, Symbol::Object(k)) => Ok(Value::Object(k.id, ValueKind::Shape(OBJECT_INSTANCE))),
         ResolvedExpression::Variable(_, Symbol::Local(k)) => Ok(runtime.get_local(k.id).clone()),
+        
+        ResolvedExpression::StringFormat(span, expressions) => {
+            let mut string = String::new();
+            for expr in expressions {
+                match evaluate(runtime, expr)? {
+                    Value::String(s) => string += &s,
+                    other => string += format!("{:?}", &other).as_str(),
+                }
+            }
+
+            Ok(Value::String(string))
+        }
 
         ResolvedExpression::UnaryOp { span, operator, operand } => {
             match (operator, evaluate(runtime, *operand)?) {
@@ -154,7 +166,8 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
                         Operator::Range => Ok(create_range(left, right)),
                         Operator::RangeLT => {
                             if left == right { Ok(Value::Array(Vec::new(), ValueKind::Int32)) }
-                            else { Ok(create_range(left, right + if left > right {1} else {-1})) }
+                            else if left > right { Ok(create_range(left, right + 1)) }
+                            else { Ok(create_range(left, right - 1)) }
                         } 
                         
                         operator => Err(RuntimeError::InvalidOperator { span, operator, operand: ValueKind::Int32 }),

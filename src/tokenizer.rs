@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::ValueKind;
+use crate::{ValueKind, parser::ParseError};
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum Operator {
@@ -82,6 +82,7 @@ pub enum TokenKind{
     Operator(Operator),
     Keyword(Keyword),
     Type(ValueKind),
+    StringFormat(String),
     LeftParen,
     RightParen,
     Comma,
@@ -99,101 +100,157 @@ pub struct Token {
     pub kind: TokenKind,
 }
 
-static WHITESPACE: &[char] = &[' ', '\n', '\t', ';'];
+static WHITESPACE: &[char] = &[' ', '\n', '\t', '\r', ';'];
 
-pub fn tokenize(input: &str) -> Vec<Token> {
-    let mut tokens = Vec::new();
-    let mut chars = input.chars().peekable();
-    
-    let mut line = 1;
-    let mut column = 1;
+type PeekableChars<'a> = std::iter::Peekable<std::str::Chars<'a>>;
 
-    while let Some(&ch) = chars.peek() {
-        let span = Span{line, column};
+pub struct Tokenizer {
+    line: usize,
+    column: usize,
 
+    interp_stack: Vec<usize>,
+    depth: usize,
+}
+
+impl Tokenizer {
+    pub fn new() -> Self {
+        Tokenizer { 
+            line: 1, 
+            column: 1,
+            interp_stack: Vec::new(),
+            depth: 0, 
+        }
+    }
+
+    pub fn span(&self) -> Span {
+        Span {line: self.line, column:self.column}
+    }
+
+    pub fn ignore_whitespace(&mut self, ch:char, chars: &mut PeekableChars) -> bool {
         match ch {
             '\n' => {
-                chars.next();
-                line += 1;
-                column = 0;
+                self.line += 1;
+                self.column = 0;
+                true
             },
-            ws if WHITESPACE.contains(&ws) => { chars.next(); },
-            '(' => {
-                tokens.push(Token{span, kind:TokenKind::LeftParen});
-                chars.next();
-                column += 1;
-            },
-            ')' => {
-                tokens.push(Token{span, kind:TokenKind::RightParen});
-                chars.next();
-                column += 1;
-            },
-            '{' => {
-                tokens.push(Token{span, kind:TokenKind::LeftBrace});
-                chars.next();
-                column += 1;
-            },
-            '}' => {
-                tokens.push(Token{span, kind:TokenKind::RightBrace});
-                chars.next();
-                column += 1;
-            },
-            '[' => {
-                tokens.push(Token{span, kind:TokenKind::LeftBracket});
-                chars.next();
-                column += 1;
-            },
-            ']' => {
-                tokens.push(Token{span, kind:TokenKind::RightBracket});
-                chars.next();
-                column += 1;
-            },
-            ',' => {
-                tokens.push(Token{span, kind:TokenKind::Comma});
-                chars.next();
-                column += 1;
-            },
+            ws if WHITESPACE.contains(&ws) => true,
+            '/' if chars.peek() == Some(&'/') => {
+                while let Some(ch) = chars.next() {
+                    self.column += 1;
+                    if ch == '\n' {
+                        self.line += 1;
+                        self.column = 0;
+                        break;
+                    }
+                }
+                true
+            }
+            '/' if chars.peek() == Some(&'*') => {
+                while let Some(ch) = chars.next() {
+                    self.column += 1;
+                    if ch == '\n' {
+                        self.line += 1;
+                        self.column = 0;
+                    }
+                    if ch == '*' && chars.peek() == Some(&'/') {
+                        chars.next();
+                        break;
+                    }
+                }
+                true
+            }
+            _ => false
+        }
+    }
+
+    pub fn parse_string(&mut self, chars: &mut PeekableChars) -> Result<Token, ParseError> {
+        let span= self.span();
+        let mut string = String::new();
+
+        while let Some(ch) = chars.next() {
+            self.column += 1;
+            match ch {
+                '"' => break,
+                '\\' => {
+                    self.column += 1;
+                    match chars.next().unwrap() {
+                        '\\' | ' ' => string.push('\\'),
+                        'n' => string.push('\n'),
+                        't' => string.push('\t'),
+                        'r' => string.push('\r'),
+                        '"' => string.push('\"'),
+                        //'\'' => string.push('\''),
+
+                        // String format
+                        '{' => {
+                            self.interp_stack.push(self.depth);
+                            return Ok(Token{span:self.span(), kind:TokenKind::StringFormat(string)})
+                        }
+
+                        other => return Err(ParseError::InvalidToken{span, token:format!("\\{}",other)})
+                    }
+                }
+                other => string.push(other),
+            }
+        }
+        Ok(Token{span:self.span(), kind:TokenKind::String(string)})
+    }
+
+    pub fn parse_token(&mut self, ch:char, chars: &mut PeekableChars) -> Result<Token, ParseError> {
+        match ch {
             '0'..='9' => {
+                let span= self.span();
                 let mut number = String::new();
+                number.push(ch);
                 while let Some(&ch) = chars.peek() {
                     if ch.is_digit(10) || ch == '.' {
                         number.push(ch);
                         chars.next();
-                        column += 1;
+                        self.column += 1;
                     } else {
                         break;
                     }
                 }
-                tokens.push(Token{span, kind:TokenKind::Number(number.parse().unwrap())});
+                Ok(Token{span, kind:TokenKind::Number(number.parse().unwrap())})
             },
             '"' => {
-                chars.next(); // skip opening quote
-                let mut string = String::new();
-                while let Some(&ch) = chars.peek() {
-                    if ch == '"' {
-                        break;
-                    } else {
-                        string.push(ch);
-                        chars.next();
-                        column += 1;
-                    }
+                self.parse_string(chars)
+            }
+            '{' => {
+                if !self.interp_stack.is_empty() { self.depth += 1 }
+                Ok(Token{span:self.span(), kind:TokenKind::LeftBrace})
+            }
+            '}' => {
+                if !self.interp_stack.is_empty() {
+                    if self.depth == *self.interp_stack.last().unwrap() {
+                        self.interp_stack.pop();
+                        return self.parse_string(chars)
+
+                    } else { self.depth -= 1 }
                 }
-                chars.next(); // skip closing quote
-                tokens.push(Token{span, kind:TokenKind::String(string)});
-            },
+                Ok(Token{span:self.span(), kind:TokenKind::RightBrace})
+            }
+            '(' => Ok(Token{span:self.span(), kind:TokenKind::LeftParen}),
+            ')' => Ok(Token{span:self.span(), kind:TokenKind::RightParen}),
+            '[' => Ok(Token{span:self.span(), kind:TokenKind::LeftBracket}),
+            ']' => Ok(Token{span:self.span(), kind:TokenKind::RightBracket}),
+            ',' => Ok(Token{span:self.span(), kind:TokenKind::Comma}),
             _ if ch.is_alphabetic() || ch == '_' => {
+                let span= self.span();
                 let mut identifier = String::new();
+                identifier.push(ch);
+
                 while let Some(&ch) = chars.peek() {
                     if ch.is_alphanumeric() || ch == '_' {
                         identifier.push(ch);
                         chars.next();
-                        column += 1;
+                        self.column += 1;
                     } else {
                         break;
                     }
                 }
 
-                tokens.push(Token{span, kind: match identifier.as_str() {
+                Ok(Token{span, kind: match identifier.as_str() {
                     "true" => TokenKind::Bool(true),
                     "false" => TokenKind::Bool(false),
 
@@ -237,57 +294,24 @@ pub fn tokenize(input: &str) -> Vec<Token> {
                     "void" => TokenKind::Type(ValueKind::None),
 
                     _ => TokenKind::Identifier(identifier),
-                }});
+                }})
             },
-            _ => {
+            op => {
+                let span= self.span();
                 let mut operator = String::new();
-                let mut comment_line = false;
+                operator.push(op);
 
                 while let Some(&ch) = chars.peek() {
-
                     if !WHITESPACE.contains(&ch) && !ch.is_alphanumeric() && ch != '_' {
                         chars.next();
-                        column += 1;
-
-                        // Single line comment
-                        if ch == '/' && chars.peek() == Some(&'/') {
-                            while let Some(ch) = chars.next() {
-                                column += 1;
-                                if ch == '\n' {
-                                    line += 1;
-                                    column = 0;
-                                    break;
-                                }
-                            }
-                            comment_line = true;
-                            break;
-                        }
-
-                        // Multi line comment
-                        if ch == '/' && chars.peek() == Some(&'*') {
-                            while let Some(ch) = chars.next() {
-                                column += 1;
-                                if ch == '\n' {
-                                    line += 1;
-                                    column = 0;
-                                }
-                                if ch == '*' && chars.peek() == Some(&'/') {
-                                    chars.next();
-                                    break;
-                                }
-                            }
-                            break;
-                        }
-
+                        self.column += 1;
                         operator.push(ch);
                     } else {
                         break;
                     }
                 }
-
-                if comment_line { continue; }
                 
-                tokens.push(Token{span:span.clone(), kind:TokenKind::Operator(match operator.as_str() {
+                Ok(Token{span:span.clone(), kind:TokenKind::Operator(match operator.as_str() {
                     "+" => Operator::Add,
                     "-" => Operator::Sub,
                     "/" => Operator::Div,
@@ -306,7 +330,7 @@ pub fn tokenize(input: &str) -> Vec<Token> {
                     "~" => Operator::BWNot,
                     "<<" => Operator::BWShiftL,
                     ">>" => Operator::BWShiftR,
-                     
+                    
                     "&=" => Operator::AndAssign,
                     "|=" => Operator::OrAssign,
                     "^=" => Operator::XorAssign,
@@ -348,12 +372,27 @@ pub fn tokenize(input: &str) -> Vec<Token> {
                     "?" => Operator::Question,
                     "??" => Operator::DQuestion,
                     
-                    _ => panic!("{}: Unknown operator: {}", span, operator)
-                })});
+                    token => return Err(ParseError::InvalidToken{span, token:format!("{}",token)})
+                })})
             }
         }
     }
 
-    tokens.push(Token{span:Span{line, column}, kind:TokenKind::EOF});
-    tokens
+    pub fn tokenize(&mut self, input: &str) -> Result<Vec<Token>, ParseError> {
+        let mut tokens = Vec::new();
+        let mut chars = input.chars().peekable();
+        
+        while let Some(ch) = chars.next() {
+            self.column += 1;
+            if self.ignore_whitespace(ch, &mut chars) { continue }
+            tokens.push(self.parse_token(ch, &mut chars)?)
+        }
+
+        tokens.push(Token{span:self.span(), kind:TokenKind::EOF});
+        Ok(tokens)
+    }
+}
+
+pub fn tokenize(input: &str) -> Result<Vec<Token>, ParseError> {
+    Tokenizer::new().tokenize(input)
 }

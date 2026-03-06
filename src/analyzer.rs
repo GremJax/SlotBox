@@ -234,6 +234,7 @@ impl ResolvedShapeExpression {
 pub enum ResolvedExpression {
     Value(Span, Value),
     Array(Span, Vec<ResolvedExpression>, ValueKind),
+    StringFormat(Span, Vec<ResolvedExpression>),
     Variable(Span, Symbol),
     Option(Span, Box<Option<ResolvedExpression>>),
     UnaryOp {
@@ -303,6 +304,7 @@ impl ResolvedExpression {
         match self {
             ResolvedExpression::Value(_, value) => value.kind(),
             ResolvedExpression::Array(_, _, value_type) => ValueKind::Array(Box::new(value_type.clone())),
+            ResolvedExpression::StringFormat(_, _) => ValueKind::String,
             ResolvedExpression::Variable(_, symbol) => symbol.kind(),
             ResolvedExpression::Option(_, option) => match *option.clone() {
                 Some(expr) => expr.kind(),
@@ -614,6 +616,15 @@ impl Analyzer {
                 Ok(ResolvedExpression::Array(span, values, kind))
             },
 
+            Expression::StringFormat(span, expressions) => {
+                let mut resolved = Vec::new();
+                for expr in expressions {
+                    resolved.push(self.resolve_expression(expr, scope)?);
+                }
+
+                Ok(ResolvedExpression::StringFormat(span, resolved))
+            }
+
             Expression::Option(span, option) => todo!(),
             
             Expression::Variable(span, k) => {
@@ -895,8 +906,10 @@ impl Analyzer {
             Statement::Expression {span, expr} => Ok(ResolvedStatement::Expression{span, expr:self.resolve_expression(expr, scope)?}),
             Statement::Using { span, package } => {
                 if let Ok(source) = fs::read_to_string(format!("/workspaces/SlotBox/src/{}.az", package)) {
-                    let tokens = tokenizer::tokenize(&source);
-
+                    let tokens = match tokenizer::tokenize(&source){
+                        Ok(tokens) => tokens,
+                        Err(error) => return Err(CompileError::IoError { span, message: format!("Could not parse {}.az: {}", package, error) }),
+                    };
                     match parser::parse(tokens){
                         Ok(ast) => Ok(ResolvedStatement::Using{ span, ast: self.analyze(ast)? }),
                         Err(error) => Err(CompileError::IoError { span, message: format!("Could not parse {}.az: {}", package, error) }),

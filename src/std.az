@@ -27,9 +27,9 @@ shape Math {
         return (x > 0) ? 1 : (x < 0) ? -1 : 0
 
     static IsEven(int32 x) -> bool
-        return x % 2 == 0
+        return (x % 2) == 0
     static IsOdd(int32 x) -> bool
-        return x % 2 != 0
+        return (x % 2) != 0
 
     static Pow(int32 x, int32 exp) -> int32 {
         let res = 1
@@ -38,14 +38,78 @@ shape Math {
         }
         return res
     }
+
+    intrinsic static Sqrt(int32 x) -> int32
+}
+
+shape IO {
+    static Print(string x) print x
+
+    intrinsic static ReadLine() -> string   // TODO: make optional
+    intrinsic static Args() -> string[]
+}
+
+shape Random {
+    intrinsic static Int() -> int32
+    intrinsic static Range(int from, int to) -> int32
+}
+
+shape Executor {
+    //Run(| -> Result|[] hooks)
+}
+
+shape Named {
+    Name string
+}
+
+shape StringConvertible {
+    abstract ToString() -> string
+}
+
+shape Identified {
+    Id uint64
+}
+
+shape Parent<T> {
+    Children T[]
+
+    //Add(T child) {
+    //    child := Child<T>
+    //    child.Parent = self
+    //    Children.Append(child)
+    //}
+}
+
+shape Child<T> {
+    Parent T
+
+    //Root() -> T 
+    //    self.Parent::Child<T>?.Parent ?? self
+}
+
+shape Array<T> {
+    Value T[]
+
+    Len() -> uint64
+        return len self.Value
+
+    intrinsic Append(T item) -> bool
+    intrinsic Add(T item, int32 index) -> bool
+    intrinsic Remove(T item, int32 index) -> bool
 }
 
 shape Comparable<T> {
     abstract Compare(T other) -> int32
+    
+    // operator <(T other) -> self.Compare(other) < 0
+    // operator >(T other) -> self.Compare(other) > 0
 }
 
 shape Equatable<T> {
-    abstract Equate(T other) -> bool
+    abstract Equals(T other) -> bool
+
+    // operator ==(T other) -> self.Equals(other)
+    // operator !=(T other) -> !self.Equals(other)
 }
 
 shape Hashable {

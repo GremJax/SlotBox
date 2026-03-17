@@ -1,6 +1,8 @@
+use crate::analyzer::CompileError;
 use crate::executor::OBJECT_INSTANCE;
-use crate::tokenizer::{self, Keyword, Operator, Span, Token, TokenKind, UNARY_OPERATORS};
-use crate::{AzimuthFlags, Function, Value, ValueKind};
+use crate::intrinsic::IntrinsicOp;
+use crate::lexer::{self, Keyword, Operator, Span, Token, TokenKind, UNARY_OPERATORS};
+use crate::{AzimuthFlags, Function, Value, ValueKind, intrinsic};
 
 #[derive(Debug, Clone)]
 pub enum ParseError {
@@ -86,8 +88,14 @@ pub enum Expression {
         has_self: bool,
         input_types: Vec<RawFunctionParam>,
         output_type: ShapeExpression,
-        func: Box<Statement>
+        func: Box<Option<FunctionBody>>
     }
+}
+
+#[derive(Debug, Clone)]
+pub enum FunctionBody {
+    Script(Statement),
+    Intrinsic(IntrinsicOp),
 }
 
 #[derive(Debug, Clone)]
@@ -101,7 +109,7 @@ pub struct RawFunction {
     pub has_self: bool,
     pub input_types: Vec<RawFunctionParam>,
     pub output_type: ShapeExpression,
-    pub func: Statement
+    pub func: Option<FunctionBody>
 }
 
 #[derive(Debug, Clone)]
@@ -165,6 +173,14 @@ pub enum Statement {
         target: Expression,
         statement: Box<Statement>,
     },
+    ForInc {
+        span: Span,
+        local: Identifier,
+        start: Expression,
+        cond: Expression,
+        inc: Box<Statement>,
+        statement: Box<Statement>,
+    },
     Assign { span: Span, target: Expression, value: Expression, },
     AssignAugmented { span: Span, target: Expression, value: Expression, operator: Operator },
     Seal { span: Span, target: Expression },
@@ -192,7 +208,14 @@ fn parse_expression(tokens: &mut PeekableTokens) -> Result<Expression, ParseErro
         TokenKind::Number(num) => Expression::Value(span, (num as i32).into()),
         TokenKind::Bool(b) => Expression::Value(span, b.into()),
         TokenKind::String(s) => Expression::Value(span, s.into()),
+        TokenKind::NoneValue => Expression::Value(span, Value::None),
+        
+        // Lambda
+        TokenKind::Operator(Operator::BWOr) => {
+            todo!()
+        }
 
+        // String format
         TokenKind::StringFormat(s) => {
             let mut expressions = Vec::new();
             expressions.push(Expression::Value(span.clone(), s.into()));
@@ -312,7 +335,7 @@ fn parse_expression(tokens: &mut PeekableTokens) -> Result<Expression, ParseErro
     if let Some(token) = tokens.peek() {
         let span = token.span.clone();
         if matches!(&token.kind, TokenKind::Operator(op) 
-            if tokenizer::BINARY_OPERATORS.contains(&op))
+            if lexer::BINARY_OPERATORS.contains(&op))
         {
             if let TokenKind::Operator(op) = tokens.next().unwrap().kind {
                 return Ok(Expression::BinaryOp {span, 
@@ -399,7 +422,7 @@ fn parse_shape_expression(tokens: &mut PeekableTokens) -> Result<ShapeExpression
     Ok(base)
 }
 
-fn parse_function(shape: ShapeExpression, is_static: bool, flags: AzimuthFlags, tokens: &mut PeekableTokens) -> Result<RawFunction, ParseError> {
+fn parse_function(shape: ShapeExpression, is_static: bool, intrinsic_name:Option<String>, flags: AzimuthFlags, tokens: &mut PeekableTokens) -> Result<RawFunction, ParseError> {
     tokens.next(); // Consume LParen
 
     let mut input_types = Vec::new();
@@ -453,9 +476,11 @@ fn parse_function(shape: ShapeExpression, is_static: bool, flags: AzimuthFlags, 
 
     // Statement
     let func = if flags.is_abstract {
-        Statement::Break { span }
+        None
+    } else if let Some(name) = intrinsic_name {
+        Some(FunctionBody::Intrinsic(intrinsic::lookup(span, name)?))
     } else {
-        parse_statement(tokens)?
+        Some(FunctionBody::Script(parse_statement(tokens)?))
     };
 
     Ok(RawFunction{ has_self, input_types, output_type, func })
@@ -573,16 +598,16 @@ fn parse_object_statement(span:Span, tokens: &mut PeekableTokens) -> Result<Stat
             let value = parse_expression(tokens)?;
             Ok(Statement::AssignAugmented{ span, target: object, value, operator:Operator::BWShiftR })
         }
-        TokenKind::Operator(Operator::Inc) => {
-            tokens.next(); // consume operator
-            let one = Expression::Value(span.clone(), 1.into());
-            Ok(Statement::AssignAugmented{ span, target: object, value:one, operator:Operator::Add })
-        }
-        TokenKind::Operator(Operator::Dec) => {
-            tokens.next(); // consume operator
-            let one = Expression::Value(span.clone(), (-1).into());
-            Ok(Statement::AssignAugmented{ span, target: object, value:one, operator:Operator::Add })
-        }
+        //TokenKind::Operator(Operator::Inc) => {
+        //    tokens.next(); // consume operator
+        //    let one = Expression::Value(span.clone(), 1.into());
+        //    Ok(Statement::AssignAugmented{ span, target: object, value:one, operator:Operator::Add })
+        //}
+        //TokenKind::Operator(Operator::Dec) => {
+        //    tokens.next(); // consume operator
+        //    let one = Expression::Value(span.clone(), (-1).into());
+        //    Ok(Statement::AssignAugmented{ span, target: object, value:one, operator:Operator::Add })
+        //}
 
         _ => Ok(Statement::Expression{span, expr:object })
 
@@ -701,6 +726,15 @@ fn parse_statement(tokens: &mut PeekableTokens) -> Result<Statement, ParseError>
                         break;
                     }
 
+                    // Intrinsic
+                    let is_intrinsic = match tokens.peek().unwrap().kind {
+                        TokenKind::Keyword(Keyword::Intrinsic) => {
+                            tokens.next();
+                            true
+                        }
+                        _ => false
+                    };
+
                     // Static
                     let is_static = match tokens.peek().unwrap().kind {
                         TokenKind::Keyword(Keyword::Static) => {
@@ -744,13 +778,18 @@ fn parse_statement(tokens: &mut PeekableTokens) -> Result<Statement, ParseError>
                         other => return Err(ParseError::UnexpectedToken { span:token.span, token:other, loc: format!("azimuth declaration") }),
                     };
 
+                    // Intrinsic name
+                    let intrinsic_name = if is_intrinsic {
+                        Some(format!("{}::{}", shape_identifier, slot_name.clone()))
+                    } else { None };
+
                     // Function check
                     if matches!(tokens.peek().unwrap().kind, TokenKind::LeftParen) {
                         
                         let flags = crate::AzimuthFlags { is_static:true, is_abstract, is_const, is_locked };
 
                         // Function
-                        let func = parse_function(ShapeExpression::Shape(shape_identifier.clone()), is_static, flags.clone(), tokens)?;
+                        let func = parse_function(ShapeExpression::Shape(shape_identifier.clone()), is_static, intrinsic_name, flags.clone(), tokens)?;
                         let value_type = ShapeExpression::Function{func:Box::new(func.clone())};
                         
                         let func_expr = Expression::Function{ 
@@ -908,17 +947,25 @@ fn parse_statement(tokens: &mut PeekableTokens) -> Result<Statement, ParseError>
                 token => return Err(ParseError::IncorrectToken { span, token, expected: format!("identifier"), loc: format!("For loop header") }),
             };
             
-            // Expect in keyword
+            // Expect in keyword or assign pattern
             match tokens.next().unwrap().kind {
-                TokenKind::Keyword(Keyword::In) => {}
-                token => return Err(ParseError::IncorrectToken { span, token, expected: format!("in"), loc: format!("For loop header") }),
-            };
 
-            let target = parse_expression(tokens)?;
+                TokenKind::Keyword(Keyword::In) => {
+                    let target = parse_expression(tokens)?;
+                    let statement = parse_statement(tokens)?;
+                    Ok(Statement::For{span, local, target, statement:Box::new(statement) })
+                }
 
-            let statement = parse_statement(tokens)?;
+                TokenKind::Operator(Operator::Assign) => {
+                    let start = parse_expression(tokens)?; 
+                    let cond = parse_expression(tokens)?;
+                    let statement = parse_statement(tokens)?;
+                    let inc = parse_statement(tokens)?;
+                    Ok(Statement::ForInc{span, local, start, cond, inc:Box::new(inc), statement:Box::new(statement) })
+                }
 
-            Ok(Statement::For{span, local, target, statement:Box::new(statement) })
+                token => Err(ParseError::IncorrectToken { span, token, expected: format!("in or assign"), loc: format!("For loop header") }),
+            }
         },
 
         // Returns

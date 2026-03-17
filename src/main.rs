@@ -2,14 +2,15 @@ use std::{collections::{HashMap}, fs};
 use ordered_float::OrderedFloat;
 
 use crate::{
-    analyzer::{AzimuthInfo, LocalId, ObjectInfo, ResolvedExpression, ResolvedStatement, ShapeInfo, Symbol}, 
-    executor::{RuntimeError, ShapeInstance},
+    analyzer::{AzimuthInfo, LocalId, ObjectInfo, ResolvedExpression, ResolvedFunctionBody, ResolvedStatement, ShapeInfo, Symbol}, 
+    executor::{RuntimeError, ShapeInstance}, lexer::Span,
 };
 
 pub mod parser;
-pub mod tokenizer;
+pub mod lexer;
 pub mod executor;
 pub mod analyzer;
+pub mod intrinsic;
 
 // Formerly SlotBox
 
@@ -161,6 +162,22 @@ impl Number {
             _ => todo!()
         }
     }
+
+    fn to_string(&self) -> String {
+        match self {
+            Number::UInt8(val) => format!("{}", val),
+            Number::UInt16(val) => format!("{}", val),
+            Number::UInt32(val) => format!("{}", val),
+            Number::UInt64(val) => format!("{}", val),
+            Number::Int8(val) => format!("{}", val),
+            Number::Int16(val) => format!("{}", val),
+            Number::Int32(val) => format!("{}", val),
+            Number::Int64(val) => format!("{}", val),
+            Number::Float32(val) => format!("{}", val),
+            Number::Float64(val) => format!("{}", val),
+            Number::Any(val) => format!("{}", val),
+        }
+    }
 }
 
 type GenericId = u8;
@@ -171,7 +188,7 @@ pub enum Value {
     Bool(bool),
     String(String),
 
-    Array(Vec<Box<Value>>, ValueKind),
+    Array(Vec<Value>, ValueKind),
     
     Azimuth(AzimuthState),
     Object(ObjectId, ValueKind),
@@ -187,6 +204,25 @@ pub enum Value {
 
 impl Value {
     fn is(&self, kind: &ValueKind) -> bool { self.kind() == *kind }
+
+    fn to_string(&self) -> String {
+        match self {
+            Value::Number(val) => val.to_string(),
+            Value::Bool(val) => format!("{}", val),
+            Value::String(val) => val.clone(),
+            Value::Array(array, _) => {
+                let mut string = String::new();
+                string.push('[');
+                for val in array {
+                    string += &val.to_string();
+                    string.push(',');
+                }
+                string.push(']');
+                string
+            }
+            val => format!("{:?}", val),
+        }
+    }
 
     fn kind(&self) -> ValueKind {
         match self {
@@ -238,7 +274,7 @@ pub struct Function {
     pub has_self:bool,
     pub input_types: Vec<FunctionParameter>,
     pub output_type: ValueKind,
-    pub func: ResolvedStatement,
+    pub func: Option<ResolvedFunctionBody>,
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -450,16 +486,22 @@ impl Object {
         panic!("No such azimuth {:?} to assign to {:?}", azimuth, value);
     }
 }
+     
+#[derive(Debug, Clone)]
+pub struct CallStackFunction {
+    pub id: AzimuthId,
+    pub span: Span,
+    pub arguments: Vec<Value>,
+}
 
 // Runtime
 pub struct Runtime {
     shapes: Vec<Shape>,    
     azimuths: Vec<Azimuth>,
-    objects: Vec<Object>,
+    objects: HashMap<ObjectId, Object>,
     locals: HashMap<LocalId, Value>,
-    next_object_id: ObjectId,
-    next_shape_id: ShapeId,
-    next_azimuth_id: AzimuthId,
+    obj_ref_count: HashMap<ObjectId, u32>,
+    call_stack: Vec<CallStackFunction>,
 }
 
 impl Runtime {
@@ -478,19 +520,19 @@ impl Runtime {
         let mut runtime = Runtime {
             shapes: Vec::new(),
             azimuths: Vec::new(),
-            objects: Vec::new(),
-            next_object_id: 1,
-            next_shape_id: 0,
-            next_azimuth_id: 0,
+            objects: HashMap::new(),
             locals: HashMap::new(),
+            obj_ref_count: HashMap::new(),
+            call_stack: Vec::new(),
         };
-        runtime.objects.push(global);
+        runtime.objects.insert(0, global);
         runtime
     }
 
     fn create_object(&mut self, info: ObjectInfo) {
+        let id = info.id;
         let object = Object {
-            id: info.id,
+            id: id,
             name: info.name,
             flags: ObjectFlags {
                 sealed: false,
@@ -502,7 +544,8 @@ impl Runtime {
         };
 
         println!("Created object with ID {}, '{}'", object.id, object.name);
-        self.objects.push(object);
+        self.objects.insert(id, object);
+        self.obj_ref_count.insert(id, 0);
     }
 
     fn create_shape(&mut self, info: ShapeInfo) {
@@ -663,7 +706,8 @@ impl Runtime {
                 object.free_slot(state_id);
             }
         } else {
-            panic!("Slot not attached to object");
+            let azimuth = self.get_azimuth(slot);
+            println!("Slot not attached to object: {:?}", azimuth.name);
         }
     }
 
@@ -719,8 +763,11 @@ impl Runtime {
 
         println!("Detaching shape {} from object {}", shape_name, object_id);
 
-        for azimuth in azimuths {
-            self.detach_slot(object_id, azimuth);
+        for azimuth_id in azimuths {
+            let az = self.get_azimuth(azimuth_id);
+            if az.flags.is_static { continue }
+
+            self.detach_slot(object_id, azimuth_id);
         }
     }
 
@@ -773,11 +820,11 @@ impl Runtime {
     }
 
     fn get_object(&self, id: ObjectId) -> &Object {
-        self.objects.get(id as usize).expect(format!("Object {} not found", id).as_str())
+        self.objects.get(&id).expect(format!("Object {} not found", id).as_str())
     }
 
     fn get_object_mut(&mut self, id: ObjectId) -> &mut Object {
-        self.objects.get_mut(id as usize).expect(format!("Object {} not found", id).as_str())
+        self.objects.get_mut(&id).expect(format!("Object {} not found", id).as_str())
     }
 
     fn get_azimuth(&self, id: AzimuthId) -> &Azimuth {
@@ -803,12 +850,33 @@ impl Runtime {
 
     fn reserve_local(&mut self, id: LocalId, value:Value) {
         //println!("reserving local {} to {:?}...", id, value);
+        match value {
+            Value::Object(id, _) => { 
+                self.obj_ref_count.insert(id, self.obj_ref_count.get(&id).unwrap_or(&0) + 1); 
+            },
+            _ => {}
+        }
         self.locals.insert(id, value);
     }
 
     fn clear_local(&mut self, id: LocalId) {
         //println!("clearing local {}...", id);
-        self.locals.remove(&id);
+        match self.locals.remove(&id) {
+            Some(Value::Object(id, _)) => {
+                let ref_count = self.obj_ref_count.get(&id).unwrap_or(&0);
+                if *ref_count <= 1 {
+                    self.clear_object(id);
+                } else {
+                    self.obj_ref_count.insert(id, ref_count - 1);
+                }
+            },
+            _ => {}
+        }
+    }
+
+    fn clear_object(&mut self, id: ObjectId) {
+        self.obj_ref_count.remove(&id);
+        self.objects.remove(&id);
     }
 
     fn clear_locals(&mut self, ids: Vec<LocalId>) {
@@ -862,28 +930,75 @@ impl Runtime {
 
     fn get_slot_value_array_element(&self, object_id: ObjectId, slot: AzimuthId, index: usize) -> Option<&Value> {
         if let Some(Value::Array(arr, _)) = self.get_slot_value(object_id, slot) {
-            return arr.get(index).map(|boxed| boxed.as_ref());
+            return arr.get(index);
         }
         None
     }
 
     fn set_slot_value(&mut self, object_id: ObjectId, slot: AzimuthId, value: Value) {
+        match value {
+            Value::Object(id, _) => { 
+                self.obj_ref_count.insert(id, self.obj_ref_count.get(&id).unwrap_or(&0) + 1); 
+            },
+            _ => {}
+        }
+        
+        let old_value = self.get_slot_value(object_id, slot);
+        match old_value {
+            Some(Value::Object(id, _)) => {
+                let ref_count = self.obj_ref_count.get(&id).unwrap_or(&0);
+                if *ref_count <= 1 {
+                    self.clear_object(*id);
+                } else {
+                    self.obj_ref_count.insert(*id, ref_count - 1);
+                }
+            },
+            _ => {}
+        }
+        
         let object = self.get_object_mut(object_id);
         object.set_value(slot, value.clone());
+
         println!("Set obj{:?}.{:?} to {:?}", object.name, slot, value);
     }
 
-    fn set_slot_value_primitive(&mut self, object_id: ObjectId, slot: AzimuthId, value: Value) {
-        self.set_slot_value(object_id, slot, value);
-    }
-
     fn set_slot_value_array(&mut self, object_id: ObjectId, slot: AzimuthId, values: Vec<Value>, kind: ValueKind) {
-        self.set_slot_value(object_id, slot, Value::Array(values.into_iter().map(Box::new).collect(), kind));
+        self.set_slot_value(object_id, slot, Value::Array(values.into_iter().collect(), kind));
     }
     fn set_slot_value_array_element(&mut self, object_id: ObjectId, slot: AzimuthId, index: usize, value: Value) {
         if let Some(Value::Array(arr, _)) = self.get_slot_value_mut(object_id, slot) {
             if index < arr.len() {
-                arr[index] = Box::new(value);
+                arr[index] = value;
+            } else {
+                panic!("Array index out of bounds");
+            }
+        } else {
+            panic!("Slot does not contain an array");
+        }
+    }
+
+    fn push_array_element(&mut self, object_id: ObjectId, slot: AzimuthId, value: Value) {
+        if let Some(Value::Array(arr, _)) = self.get_slot_value_mut(object_id, slot) {
+            arr.push(value);
+        } else {
+            panic!("Slot does not contain an array")
+        }
+    }
+    fn insert_array_element(&mut self, object_id: ObjectId, slot: AzimuthId, index: usize, value: Value) {
+        if let Some(Value::Array(arr, _)) = self.get_slot_value_mut(object_id, slot) {
+            if index < arr.len() {
+                arr.insert(index, value);
+            } else {
+                panic!("Array index out of bounds");
+            }
+        } else {
+            panic!("Slot does not contain an array");
+        }
+    }
+    fn remove_array_element(&mut self, object_id: ObjectId, slot: AzimuthId, index: usize) {
+        if let Some(Value::Array(arr, _)) = self.get_slot_value_mut(object_id, slot) {
+            if index < arr.len() {
+                arr.remove(index);
             } else {
                 panic!("Array index out of bounds");
             }
@@ -923,6 +1038,28 @@ impl Runtime {
         println!();
     }
 
+    fn get_stack_trace(&self) -> String {
+        let mut output = String::new();
+        for func in &self.call_stack {
+
+            let mut args = String::new();
+            for arg in &func.arguments {
+                args += &arg.to_string();
+            }
+
+            output += format!("\nat [{},{}] \"{}\", with arguments: [{}],",
+                func.span.line, func.span.column,
+                self.get_azimuth(func.id).name,
+                args
+            ).as_str();
+        }
+        output
+    }
+
+    fn panic_stack_trace(&self, error: RuntimeError) {
+        panic!("Program failed: {} {}", error, self.get_stack_trace())
+    }
+
 }
 
 //fn print_hello(params: FunctionParams) -> Value {
@@ -933,28 +1070,28 @@ impl Runtime {
 fn main() {
 
     let source = match fs::read_to_string("/workspaces/SlotBox/src/main.az") {
-        Ok(source) => source,
         Err(_) => panic!("Could not find main.az"),
+        Ok(source) => source,
     };
 
-    let tokens = match tokenizer::tokenize(&source){
-        Ok(tokens) => tokens,
+    let tokens = match lexer::tokenize(&source){
         Err(error) => panic!("Could not parse main.az:\n{}", error),
+        Ok(tokens) => tokens,
     };
 
     let ast = match parser::parse(tokens) {
-        Ok(ast) => ast,
         Err(error) => panic!("Could not parse main.az:\n{}", error),
+        Ok(ast) => ast,
     };
 
     let resolved_ast = match analyzer::analyze(ast){
-        Ok(resolved_ast) => resolved_ast,
         Err(error) => panic!("Could not compile main.az:\n{}", error),
+        Ok(resolved_ast) => resolved_ast,
     };
 
     let mut runtime = Runtime::new();
-    let result = match executor::execute(&mut runtime, resolved_ast){
-        Ok(result) => result,
-        Err(error) => panic!("Runtime error in main.az:\n{}", error),
+    match executor::execute(&mut runtime, resolved_ast){
+        Err(error) => runtime.panic_stack_trace(error),
+        _ => println!("Program executed successfully."),
     };
 }

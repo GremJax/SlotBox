@@ -13,9 +13,13 @@ shape Thing {
     PrintMult(int32 mult) {
         print self.X * mult
     }
+
+    CauseRuntimeError() {
+        print self.X / 0
+    }
 }
 
-shape Child : Thing(A -> X) {
+shape SubThing : Thing(A -> X) {
     A int32
 }
 
@@ -33,21 +37,31 @@ print object.X
 
 object.Y = 0 ... 6
 print object.Y[5]
+print object.Y
 
 for i in object.Y {
-    print i
+    print "object.Y: \{i}"
 }
 
 print len object.Y
 
-object.Print()
+object.Print()       
 object.PrintMult(2)
 
 print "next up: \{9}"
 
-object := Child
+object =: Thing
+object := SubThing
 object.A = 5
 object.A *= 2
 
 if object.A < 5 throw "somehow less"
 else print object.A
+
+let objref = object
+print objref.A + 1
+
+let read = IO.ReadLine()
+print "echo \{read}"
+
+//object.CauseRuntimeError()

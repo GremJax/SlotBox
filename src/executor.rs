@@ -1,6 +1,6 @@
-use crate::analyzer::LocalId;
-use crate::{Function, FunctionParameter, MappingTo};
-use crate::tokenizer::{Operator, Span};
+use crate::analyzer::{LocalId, ResolvedFunctionBody};
+use crate::{CallStackFunction, Function, FunctionParameter, MappingTo};
+use crate::lexer::{Operator, Span};
 use crate::{
     Mapping, ObjectId, Number, Runtime, ShapeId, Value, ValueKind, executor,
     analyzer::{ResolvedExpression, ResolvedShapeExpression, ResolvedStatement, Symbol},
@@ -52,7 +52,7 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
         ResolvedExpression::Array(_, expressions, kind) => {
             let mut values = Vec::new();
             for item in expressions {
-                values.push(Box::new(evaluate(runtime, item)?));
+                values.push(evaluate(runtime, item)?);
             }
             Ok(Value::Array(values, kind))
         },
@@ -64,7 +64,7 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
             for expr in expressions {
                 match evaluate(runtime, expr)? {
                     Value::String(s) => string += &s,
-                    other => string += format!("{:?}", &other).as_str(),
+                    other => string += &other.to_string(),
                 }
             }
 
@@ -226,7 +226,7 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
             match (target, index) {
                 (Value::Array(array, _), Value::Number(index)) => {
                     match array.get(index.to_i32() as usize) {
-                        Some(value) => Ok(*value.clone()),
+                        Some(value) => Ok(value.clone()),
                         None => return Err(RuntimeError::Error{span, message:format!("Index {:?} out of bounds", index)}),
                     }
                 }
@@ -247,44 +247,64 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
                 other => return Err(RuntimeError::Error{span, message:format!("{:?} is not a function or function chain", other)}),
             };
 
-            let statement = &func.func;
-            let expected_return = func.output_type.clone();
+            match func.func.as_ref() {
+                None => Err(RuntimeError::Error{ span, message:format!("Abstract method run without body") }),
+                Some(ResolvedFunctionBody::Script(statement)) => {
+                    let expected_return = func.output_type.clone();
 
-            // Create locals
-            for i in 0..func.input_types.len() {
-                let param = params.get(i).unwrap();
-                let local = func.input_types.get(i).unwrap().local;
-                
-                runtime.reserve_local(local, param.clone());
-            }
-
-            match execute_statement(runtime, statement.clone())? {
-                ExecFlow::Error { span, message } => Err(RuntimeError::Throw { span, message }),
-                ExecFlow::Return(span, value) => {
-                    if value.kind() != expected_return {
-                        return Err(RuntimeError::TypeMismatch { span, found: value, expected: expected_return });
+                    // Create locals
+                    for i in 0..func.input_types.len() {
+                        let param = params.get(i).unwrap();
+                        let local = func.input_types.get(i).unwrap().local;
+                        
+                        runtime.reserve_local(local, param.clone());
                     }
+                    
+                    // Add to stack
+                    runtime.call_stack.push(CallStackFunction{
+                        id:func.id,
+                        span: span.clone(),
+                        arguments: params.clone()
+                    });
 
-                    // Free locals
-                    for param in func.input_types {
-                        runtime.clear_local(param.local);
+                    match execute_statement(runtime, statement.clone())? {
+                        ExecFlow::Error { span, message } => Err(RuntimeError::Throw { span, message }),
+                        ExecFlow::Return(span, value) => {
+                            if value.kind() != expected_return {
+                                return Err(RuntimeError::TypeMismatch { span, found: value, expected: expected_return });
+                            }
+
+                            // Free locals
+                            for param in func.input_types {
+                                runtime.clear_local(param.local);
+                            }
+
+                            // Remove from stack
+                            runtime.call_stack.pop();
+
+                            Ok(value)
+                        },
+                        ExecFlow::Normal(span) => {
+                            if expected_return != ValueKind::None {
+                                return Err(RuntimeError::Error { span, message:format!("No value returned, expected {:?}", expected_return) });
+                            }
+
+                            // Free locals
+                            for param in func.input_types {
+                                runtime.clear_local(param.local);
+                            }
+                            
+                            // Remove from stack
+                            runtime.call_stack.pop();
+
+                            Ok(Value::None)
+                        }
+                        _ => Err(RuntimeError::Error { span, message:format!("No value returned, expected {:?}", expected_return) }),
                     }
-
-                    Ok(value)
-                },
-                ExecFlow::Normal(span) => {
-                    if expected_return != ValueKind::None {
-                        return Err(RuntimeError::Error { span, message:format!("No value returned, expected {:?}", expected_return) });
-                    }
-
-                    // Free locals
-                    for param in func.input_types {
-                        runtime.clear_local(param.local);
-                    }
-
-                    Ok(Value::None)
                 }
-                _ => Err(RuntimeError::Error { span, message:format!("No value returned, expected {:?}", expected_return) }),
+                Some(ResolvedFunctionBody::Intrinsic(func)) => {
+                    Ok(func(span, params, runtime)?)
+                }
             }
         },
 
@@ -345,14 +365,14 @@ pub fn evaluate_place(runtime: &mut Runtime, expression:ResolvedExpression) -> R
 
 pub fn create_range(from: i32, to: i32) -> Value {
 
-    let values: Vec<Box<Value>> = if from <= to {
+    let values: Vec<Value> = if from <= to {
         (from..=to)
-            .map(|i| Box::new(i.into()))
+            .map(|i| i.into())
             .collect()
     } else {
         (to..=from)
             .rev()
-            .map(|i| Box::new(i.into()))
+            .map(|i| i.into())
             .collect()
     };
 
@@ -405,7 +425,7 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
             match evaluate(runtime, expr)? {
                 Value::String(k) => println!("{}", k),
                 Value::Object(object_id, _) => runtime.print_object(object_id),
-                other => println!("{:?}", other),
+                other => println!("{}", other.to_string()),
             }
             Ok(ExecFlow::Normal(span))
         },
@@ -431,14 +451,17 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
             Ok(ExecFlow::Declare(span, id))
         },
 
-        ResolvedStatement::DeclareObject { span, symbol: Symbol::Object(info), shape } => {
+        ResolvedStatement::DeclareObject { span, local, info, shape } => {
             let id = info.id.clone();
 
             runtime.create_object(info);
 
-            if let ValueKind::Shape(inst) = evaluate_shape(runtime, shape){
+            let shape = evaluate_shape(runtime, shape);
+            if let ValueKind::Shape(inst) = shape.clone() {
                 runtime.attach_shape(id, inst);
             }
+            
+            runtime.reserve_local(local, Value::Object(id, shape));
             
             Ok(ExecFlow::Normal(span))
         },
@@ -561,6 +584,14 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
             Ok(ExecFlow::Normal(span))
         }
 
+        ResolvedStatement::ForInc { span, local, start, cond, inc, statement } => {
+            let start = match evaluate(runtime,  start)? {
+                Value::Number(num) => num,
+                other => return Err(RuntimeError::TypeMismatch { span, found: other, expected: ValueKind::Number }),
+            };
+            todo!()
+        }
+
         ResolvedStatement::For{ span, local, target, statement } => {
             
             let target = match evaluate(runtime, target)? {
@@ -569,7 +600,7 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
             };
 
             for item in target {
-                runtime.reserve_local(local, *item);
+                runtime.reserve_local(local, item);
 
                 match execute_statement(runtime, *statement.clone())? {
                     ExecFlow::Continue(_) => continue,

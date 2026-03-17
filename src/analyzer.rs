@@ -1,8 +1,8 @@
 use std::{collections::HashMap, fs};
 
-use crate::{AzimuthFlags, AzimuthId, FunctionInfo, GenericId, Number, ObjectId, ShapeId, Value, ValueKind, analyzer, executor::{self, OBJECT_INSTANCE, ShapeInstance}, parser::{self, Mapping}, tokenizer::{self, Span}}; 
+use crate::{AzimuthFlags, AzimuthId, FunctionInfo, GenericId, Number, ObjectId, ShapeId, Value, ValueKind, analyzer, executor::{self, OBJECT_INSTANCE, ShapeInstance}, intrinsic::IntrinsicOp, lexer::{self, Span}, parser::{self, FunctionBody, Mapping}}; 
 use parser::{RawAzimuth, Expression, Statement, ShapeExpression};
-use tokenizer::{Operator};
+use lexer::{Operator};
 
 #[derive(Debug, Clone)]
 pub enum CompileError {
@@ -12,6 +12,7 @@ pub enum CompileError {
     DuplicateSymbol { span: Span, name: String },
     ExpectedBoolCondition { span: Span, found: ValueKind },
     TypeMismatch { span: Span, expected: ValueKind, found: ValueKind, loc: String },
+    IncorrectReturn { span: Span, expected: ValueKind, found: ValueKind },
     InvalidUnaryOp { span: Span, operator: Operator, operand: Value },
     InvalidBinaryOp { span: Span, operator: Operator, left: Value, right: Value },
     InvalidThrow { span: Span, found: ValueKind },
@@ -35,6 +36,9 @@ impl std::fmt::Display for CompileError {
 
             CompileError::TypeMismatch { span, expected, found, loc } =>
                 write!(f, "{}: Type mismatch: expected {:?} for {}, got {:?}", span, expected, loc, found),
+                
+            CompileError::IncorrectReturn { span, expected, found } =>
+                write!(f, "{}: Return type mismatch: expected {:?}, got {:?}", span, expected, found),
 
             CompileError::InvalidUnaryOp { span, operator, operand } =>
                 write!(f, "{}: Invalid unary operator {:?} on {:?}", span, operator, operand),
@@ -99,6 +103,12 @@ pub struct GenericInfo {
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct FunctionSignature {
+    pub name: Identifier,
+    pub args: Vec<ValueKind>
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum Symbol {
     Shape(ShapeInfo),
     Object(ObjectInfo),
@@ -160,6 +170,12 @@ pub struct ResolvedMapping {
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub enum ResolvedFunctionBody {
+    Script(ResolvedStatement),
+    Intrinsic(IntrinsicOp),
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct ResolvedFunctionParameter {
     pub shape: ResolvedShapeExpression,
     pub local: LocalId
@@ -169,7 +185,7 @@ pub struct ResolvedFunctionParameter {
 pub enum ResolvedStatement {
     Using { span: Span, ast: Vec<ResolvedStatement>, },
     DeclareShape { span: Span, symbol: Symbol, azimuths: Vec<Symbol> },
-    DeclareObject { span: Span, symbol: Symbol, shape: ResolvedShapeExpression },
+    DeclareObject { span: Span, local: LocalId, info: ObjectInfo, shape: ResolvedShapeExpression },
     DeclareLocal { span: Span, symbol: Symbol, value: ResolvedExpression },
     Detach { span: Span, object: ResolvedExpression, shape: ResolvedShapeExpression },
     AddMapping { span: Span, object: ResolvedExpression, mapping: ResolvedMapping },
@@ -193,6 +209,14 @@ pub enum ResolvedStatement {
         target: ResolvedExpression,
         statement: Box<ResolvedStatement>,
     },
+    ForInc {
+        span: Span, 
+        local: LocalId,
+        start: ResolvedExpression,
+        cond: ResolvedExpression,
+        inc: Box<ResolvedStatement>,
+        statement: Box<ResolvedStatement>,
+    },
     Assign { span: Span, target: ResolvedExpression, value: ResolvedExpression },
     Seal { span: Span, target: ResolvedExpression, },
     Block(Vec<ResolvedStatement>),
@@ -200,6 +224,64 @@ pub enum ResolvedStatement {
     Continue{ span: Span, }, 
     Return{span: Span, value: ResolvedExpression },
     Throw{span: Span, message: ResolvedExpression },
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub enum ReturnStatus {
+    Always,
+    Conditionally,
+    Never,
+}
+
+impl ResolvedStatement {
+
+    pub fn walk_returns(&self, expected:ValueKind) -> Result<ReturnStatus, CompileError> {
+        match self {
+            ResolvedStatement::Return{span, value} => {
+                if !value.kind().is_assignable_from(expected.clone()) { 
+                    Err(CompileError::IncorrectReturn{span:span.clone(), expected, found: value.kind()})
+                } else {
+                    Ok(ReturnStatus::Always)
+                }
+            }
+            ResolvedStatement::Block(statements) => {
+                let mut conditionally_flag = false;
+
+                for statement in statements {
+                    match statement.walk_returns(expected.clone())? {
+                        ReturnStatus::Always => return Ok(ReturnStatus::Always),
+                        ReturnStatus::Conditionally => conditionally_flag = true,
+                        ReturnStatus::Never => continue,
+                    }
+                }
+
+                if conditionally_flag {
+                    Ok(ReturnStatus::Conditionally)
+                } else {
+                    Ok(ReturnStatus::Never)
+                }
+            }
+            ResolvedStatement::If{true_statement, else_statement, ..} => {
+                let true_status = (*true_statement).walk_returns(expected.clone())?;
+                
+                let else_status = if let Some(statement) = else_statement.as_ref() {
+                    statement.walk_returns(expected)?
+                } else { ReturnStatus::Never };
+
+                if true_status == ReturnStatus::Always && true_status == else_status {
+                    Ok(ReturnStatus::Always)
+                } else if true_status == ReturnStatus::Never && true_status == else_status {
+                    Ok(ReturnStatus::Never)
+                } else {
+                    Ok(ReturnStatus::Conditionally)
+                }
+            }
+            ResolvedStatement::For {statement, ..} => statement.walk_returns(expected),
+            ResolvedStatement::While {statement, ..} => statement.walk_returns(expected),
+            _ => Ok(ReturnStatus::Never)
+        }
+    }
+
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -274,7 +356,7 @@ pub enum ResolvedExpression {
         has_self: bool,
         input_types: Vec<ResolvedFunctionParameter>,
         output_type: ResolvedShapeExpression,
-        func: Box<ResolvedStatement>
+        func: Box<Option<ResolvedFunctionBody>>
     }
 }
 
@@ -503,7 +585,11 @@ impl Analyzer {
 
         // Static singleton
         let static_info = if has_static {
-            Some(self.declare_object(new_scope, format!("{}::Static", name), ResolvedShapeExpression::Primitive(ValueKind::Shape(OBJECT_INSTANCE))).clone())
+            Some(Symbol::Object(self.declare_object(
+                new_scope, 
+                format!("{}::Static", name), 
+                ResolvedShapeExpression::Primitive(ValueKind::Shape(OBJECT_INSTANCE))
+            ).0))
         } else { None };
 
         // Propegate Shape
@@ -568,18 +654,19 @@ impl Analyzer {
         scope.symbols.insert(identifier.clone(), symbol);
     }
 
-    fn declare_object(&mut self, scope: ScopeId, name: Identifier, shape: ResolvedShapeExpression) -> &Symbol {
+    fn declare_object(&mut self, scope: ScopeId, name: Identifier, shape: ResolvedShapeExpression) -> (ObjectInfo, LocalId) {
         let id = self.next_object_id.clone();
         self.next_object_id += 1;
 
         let mut known_shapes = Vec::new();
         known_shapes.push(shape.kind());
 
-        let symbol = Symbol::Object(ObjectInfo{id: id, name: name.clone(), known_shapes});
-        
-        let scope = self.get_scope_mut(scope);
-        scope.symbols.insert(name.clone(), symbol);
-        scope.symbols.get(&name).unwrap()
+        let local = match self.declare_local(scope, name.clone(), shape) {
+            Symbol::Local(info) => info.id,
+            _ => unreachable!()
+        };
+
+        (ObjectInfo{id: id, name: name, known_shapes:known_shapes.clone()}, local)
     }
 
     fn declare_local(&mut self, scope: ScopeId, name: Identifier, shape: ResolvedShapeExpression) -> &Symbol {
@@ -833,10 +920,28 @@ impl Analyzer {
                     resolved_inputs.push(resolved_input);
                 }
 
+                let output_type = self.resolve_shape_expression(output_type, new_scope)?;
+
+                let body = match func.as_ref() {
+                    None => None,
+                    Some(FunctionBody::Script(func)) => {
+                        let statement = self.resolve_statement(func.clone(), new_scope)?;
+                        match statement.walk_returns(output_type.kind())? {
+                            ReturnStatus::Always => {},
+                            _ => if !output_type.kind().is_assignable_from(ValueKind::None) {
+                                return Err(CompileError::IncorrectReturn { span, expected: output_type.kind(), found: ValueKind::None })
+                            }
+                        }
+                        Some(ResolvedFunctionBody::Script(statement))
+                    },
+                    Some(FunctionBody::Intrinsic(func)) => Some(ResolvedFunctionBody::Intrinsic(*func)),
+                };
+
                 Ok(ResolvedExpression::Function{span, has_self, 
                     input_types:resolved_inputs, 
-                    output_type:self.resolve_shape_expression(output_type, new_scope)?, 
-                    func:Box::new(self.resolve_statement(*func, new_scope)?)})
+                    output_type, 
+                    func:Box::new(body)
+                })
             }
 
         }
@@ -906,7 +1011,7 @@ impl Analyzer {
             Statement::Expression {span, expr} => Ok(ResolvedStatement::Expression{span, expr:self.resolve_expression(expr, scope)?}),
             Statement::Using { span, package } => {
                 if let Ok(source) = fs::read_to_string(format!("/workspaces/SlotBox/src/{}.az", package)) {
-                    let tokens = match tokenizer::tokenize(&source){
+                    let tokens = match lexer::tokenize(&source){
                         Ok(tokens) => tokens,
                         Err(error) => return Err(CompileError::IoError { span, message: format!("Could not parse {}.az: {}", package, error) }),
                     };
@@ -936,8 +1041,8 @@ impl Analyzer {
 
                 let shape = self.resolve_shape_expression(shape, scope)?;
     
-                let symbol = self.declare_object(scope, name, shape.clone());
-                Ok(ResolvedStatement::DeclareObject{ span, symbol: symbol.clone(), shape })
+                let (info, local) = self.declare_object(scope, name, shape.clone());
+                Ok(ResolvedStatement::DeclareObject{ span, local, info, shape })
             }
             Statement::DeclareLocal { span, name, value } => {
                 let my_scope = self.get_scope_mut(scope);
@@ -1051,6 +1156,32 @@ impl Analyzer {
 
                 Ok(ResolvedStatement::For{span, local:id, target, statement:Box::new(statement)})
             }
+            
+            Statement::ForInc { span, local, start, cond, inc, statement } => {
+                let resolved_start = self.resolve_expression(start, scope)?;
+                if !resolved_start.kind().is_assignable_from(ValueKind::Number) {
+                    return Err(CompileError::TypeMismatch { span, expected: ValueKind::Number, found: resolved_start.kind(), loc: format!("for loop start value") } )
+                }
+                let resolved_condition = self.resolve_expression(cond, scope)?;
+                if !resolved_condition.kind().is_assignable_from(ValueKind::Bool) {
+                    return Err(CompileError::ExpectedBoolCondition { span, found: resolved_condition.kind() })
+                }
+
+                let new_scope = self.create_scope(scope);
+                
+                let resolved_type = ResolvedShapeExpression::Primitive(ValueKind::Int32);
+                let local = self.declare_local(new_scope, local, resolved_type.clone()).clone();
+
+                let id = match local {
+                    Symbol::Local(info) => info.id,
+                    _ => todo!()
+                };
+
+                let inc = self.resolve_statement(*inc, new_scope)?;
+                let statement = self.resolve_statement(*statement, new_scope)?;
+
+                Ok(ResolvedStatement::ForInc{span, local:id, start:resolved_start, cond:resolved_condition, inc:Box::new(inc), statement:Box::new(statement)})
+            }
 
             Statement::Assign {span, target, value } => {
                 let target = self.resolve_expression(target, scope)?;
@@ -1078,12 +1209,12 @@ impl Analyzer {
                 let value = self.resolve_expression(value, scope)?;
 
                 // Ensure int types
-                if !target.kind().is_assignable_from(ValueKind::Number) {
-                    return Err(CompileError::TypeMismatch { span, expected: ValueKind::Int32, found: target.kind(), loc:format!("augmented assignment target") })
-                }
-                if !value.kind().is_assignable_from(ValueKind::Number) {
-                    return Err(CompileError::TypeMismatch { span, expected: ValueKind::Int32, found: value.kind(), loc:format!("augmented assignment value") })
-                }
+                //if !target.kind().is_assignable_from(ValueKind::Number) {
+                //    return Err(CompileError::TypeMismatch { span, expected: ValueKind::Int32, found: target.kind(), loc:format!("augmented assignment target") })
+                //}
+                //if !value.kind().is_assignable_from(ValueKind::Number) {
+                //    return Err(CompileError::TypeMismatch { span, expected: ValueKind::Int32, found: value.kind(), loc:format!("augmented assignment value") })
+                //}
 
                 let expr = ResolvedExpression::BinaryOp {span:span.clone(), left: Box::new(target.clone()), operator, right: Box::new(value) };
                 Ok(ResolvedStatement::Assign { span, target, value: expr })

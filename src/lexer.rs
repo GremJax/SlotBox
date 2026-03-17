@@ -18,7 +18,11 @@ pub enum Operator {
     IsShape, NIsShape
 }
 
-pub const UNARY_OPERATORS: &[Operator] = &[ Operator::BWNot, Operator::Not, Operator::Dec, Operator::Inc, Operator::Sub, Operator::Len ];
+pub const UNARY_OPERATORS: &[Operator] = &[ 
+    Operator::BWNot, Operator::Not, 
+    //Operator::Dec, Operator::Inc, 
+    Operator::Sub, Operator::Len 
+    ];
 pub const BINARY_OPERATORS: &[Operator] = &[
     Operator::Add, Operator::Sub, Operator::Mul, Operator::Div, Operator::Mod,
     Operator::Equal, Operator::NEqual, Operator::GT, Operator::LT, Operator::GTE, Operator::LTE,
@@ -50,9 +54,9 @@ impl Operator {
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum Keyword {
-    Using,
+    Namespace, Using,
     Shape, Let,
-    Static, Seal, Locked, Const, Abstract,
+    Static, Seal, Locked, Const, Abstract, Intrinsic,
     Before, After, Next,
     Func, PSelf, Attach, Detach,
     If, Else, Switch,
@@ -79,6 +83,7 @@ pub enum TokenKind{
     Number(f64),
     Bool(bool),
     String(String),
+    NoneValue,
     Operator(Operator),
     Keyword(Keyword),
     Type(ValueKind),
@@ -104,7 +109,7 @@ static WHITESPACE: &[char] = &[' ', '\n', '\t', '\r', ';'];
 
 type PeekableChars<'a> = std::iter::Peekable<std::str::Chars<'a>>;
 
-pub struct Tokenizer {
+pub struct Lexer {
     line: usize,
     column: usize,
 
@@ -112,9 +117,9 @@ pub struct Tokenizer {
     depth: usize,
 }
 
-impl Tokenizer {
+impl Lexer {
     pub fn new() -> Self {
-        Tokenizer { 
+        Lexer { 
             line: 1, 
             column: 1,
             interp_stack: Vec::new(),
@@ -253,7 +258,9 @@ impl Tokenizer {
                 Ok(Token{span, kind: match identifier.as_str() {
                     "true" => TokenKind::Bool(true),
                     "false" => TokenKind::Bool(false),
+                    "null" => TokenKind::NoneValue,
 
+                    "namespace" => TokenKind::Keyword(Keyword::Namespace),
                     "using" => TokenKind::Keyword(Keyword::Using),
                     "shape" => TokenKind::Keyword(Keyword::Shape),
                     "let" => TokenKind::Keyword(Keyword::Let),
@@ -265,6 +272,7 @@ impl Tokenizer {
                     "seal" => TokenKind::Keyword(Keyword::Seal),
                     "locked" => TokenKind::Keyword(Keyword::Locked),
                     "abstract" => TokenKind::Keyword(Keyword::Abstract),
+                    "intrinsic" => TokenKind::Keyword(Keyword::Intrinsic),
                     "const" => TokenKind::Keyword(Keyword::Const),
                     "before" => TokenKind::Keyword(Keyword::Before),
                     "after" => TokenKind::Keyword(Keyword::After),
@@ -286,9 +294,37 @@ impl Tokenizer {
                     "or" => TokenKind::Operator(Operator::Or),
 
                     "number" => TokenKind::Type(ValueKind::Number),
+
+                    //"int8" => TokenKind::Type(ValueKind::Int8),
+                    //"byte" => TokenKind::Type(ValueKind::Int8),
+
+                    //"int16" => TokenKind::Type(ValueKind::Int16),
+                    //"short" => TokenKind::Type(ValueKind::Int16),
+
                     "int32" => TokenKind::Type(ValueKind::Int32),
-                    "uint64" => TokenKind::Type(ValueKind::Int32),
-                    "uint8" => TokenKind::Type(ValueKind::UInt8),
+                    "int" => TokenKind::Type(ValueKind::Int32),
+
+                    //"int64" => TokenKind::Type(ValueKind::Int64),
+                    //"long" => TokenKind::Type(ValueKind::Int64),
+
+                    "uint8" => TokenKind::Type(ValueKind::Int32),
+                    "ubyte" => TokenKind::Type(ValueKind::UInt8),
+
+                    //"uint16" => TokenKind::Type(ValueKind::UInt16),
+                    //"ushort" => TokenKind::Type(ValueKind::UInt16),
+
+                    //"uint32" => TokenKind::Type(ValueKind::UInt32),
+                    //"uint" => TokenKind::Type(ValueKind::UInt32),
+
+                    "uint64" => TokenKind::Type(ValueKind::UInt64),
+                    "ulong" => TokenKind::Type(ValueKind::UInt64),
+
+                    //"float32" => TokenKind::Type(ValueKind::Float32),
+                    //"float" => TokenKind::Type(ValueKind::Float32),
+
+                    //"float64" => TokenKind::Type(ValueKind::Float64),
+                    //"double" => TokenKind::Type(ValueKind::Float64),
+                    
                     "bool" => TokenKind::Type(ValueKind::Bool),
                     "string" => TokenKind::Type(ValueKind::String),
                     "void" => TokenKind::Type(ValueKind::None),
@@ -394,5 +430,5 @@ impl Tokenizer {
 }
 
 pub fn tokenize(input: &str) -> Result<Vec<Token>, ParseError> {
-    Tokenizer::new().tokenize(input)
+    Lexer::new().tokenize(input)
 }

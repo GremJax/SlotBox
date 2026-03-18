@@ -32,7 +32,7 @@ pub enum ValueKind {
     Local(Box<ValueKind>),
     Pointer(Box<ValueKind>),
     ArrayElement(Box<ValueKind>),
-    Function(Box<FunctionInfo>),
+    Function(Box<FunctionSignature>),
     Generic(GenericId),
     Multiple(Vec<ValueKind>),
     #[default] None
@@ -197,7 +197,7 @@ pub enum Value {
     ArrayElement(ObjectId, AzimuthId, ValueKind, usize),
 
     Function(Box<Function>),
-    FunctionChain(Vec<AzimuthId>, FunctionInfo),
+    FunctionChain(Vec<AzimuthId>, FunctionSignature),
 
     #[default] None,
 }
@@ -236,9 +236,8 @@ impl Value {
             Value::Pointer(_, _, kind) => kind.clone(),
             Value::ArrayElement(_, _, kind, _) => kind.clone(),
             Value::Function(func) => 
-                ValueKind::Function(Box::new(FunctionInfo{
+                ValueKind::Function(Box::new(FunctionSignature{
                     has_self:func.has_self,
-                    id:func.id, 
                     output_type:func.output_type.clone(),
                     input_types:func.input_types.iter().map(|param| param.kind.clone()).collect(),
                 })),
@@ -275,6 +274,7 @@ pub struct Function {
     pub input_types: Vec<FunctionParameter>,
     pub output_type: ValueKind,
     pub func: Option<ResolvedFunctionBody>,
+    pub captures: Vec<LocalId>,
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -284,8 +284,7 @@ pub struct FunctionParameter {
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct FunctionInfo {
-    pub id: AzimuthId,
+pub struct FunctionSignature {
     pub input_types: Vec<ValueKind>,
     pub output_type: ValueKind,
     pub has_self: bool,
@@ -501,6 +500,7 @@ pub struct Runtime {
     objects: HashMap<ObjectId, Object>,
     locals: HashMap<LocalId, Value>,
     obj_ref_count: HashMap<ObjectId, u32>,
+    local_ref_count: HashMap::<LocalId, u32>,
     call_stack: Vec<CallStackFunction>,
 }
 
@@ -523,6 +523,7 @@ impl Runtime {
             objects: HashMap::new(),
             locals: HashMap::new(),
             obj_ref_count: HashMap::new(),
+            local_ref_count: HashMap::new(),
             call_stack: Vec::new(),
         };
         runtime.objects.insert(0, global);
@@ -857,6 +858,7 @@ impl Runtime {
             _ => {}
         }
         self.locals.insert(id, value);
+        self.local_ref_count.insert(id, 1);
     }
 
     fn clear_local(&mut self, id: LocalId) {
@@ -874,6 +876,28 @@ impl Runtime {
         }
     }
 
+    fn ref_local(&mut self, id: LocalId, errorcode: i32) {
+        match self.local_ref_count.get(&id) {
+            None => panic!("{}: The ref thing happened: {}", errorcode, id),
+            Some(count) => {
+                self.local_ref_count.insert(id, count + 1);
+            }
+        }
+    }
+
+    fn deref_local(&mut self, id: LocalId, errorcode: i32) {
+        match self.local_ref_count.get(&id) {
+            None => panic!("{}: The deref thing happened: {}", errorcode, id),
+            Some(count) => {
+                if *count == 1 {
+                    self.clear_local(id);
+                } else {
+                    self.local_ref_count.insert(id, count - 1);
+                }
+            }
+        }
+    }
+
     fn clear_object(&mut self, id: ObjectId) {
         self.obj_ref_count.remove(&id);
         self.objects.remove(&id);
@@ -882,6 +906,12 @@ impl Runtime {
     fn clear_locals(&mut self, ids: Vec<LocalId>) {
         for id in ids {
             self.clear_local(id);
+        }
+    }
+
+    fn deref_locals(&mut self, ids: Vec<LocalId>, errorcode: i32) {
+        for id in ids {
+            self.deref_local(id, errorcode);
         }
     }
 

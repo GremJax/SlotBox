@@ -1,6 +1,6 @@
 print "loading standard library..."
 
-shape Object {}
+shape Object {} 
 
 shape Math {
     
@@ -45,17 +45,32 @@ shape Math {
 shape IO {
     static Print(string x) print x
 
-    intrinsic static ReadLine() -> string   // TODO: make optional
+    intrinsic static ReadLine() -> string?
     intrinsic static Args() -> string[]
 }
 
 shape Random {
     intrinsic static Int() -> int32
     intrinsic static Range(int from, int to) -> int32
+
+    static Chance(int chance) -> bool 
+        return Random.Range(1, chance) == 1
+
+    static Bool() -> bool 
+        return Random.Chance(2)
+}
+
+shape Error {
+    Message string
+    Throw() throw self.Message
 }
 
 shape Executor {
-    //Run(| -> Result|[] hooks)
+    Run(|()|[] hooks) {
+        for hook in hooks {
+            hook()
+        }
+    }
 }
 
 shape Named {
@@ -87,11 +102,12 @@ shape Child<T> {
     //    self.Parent::Child<T>?.Parent ?? self
 }
 
-shape Array<T> {
-    Value T[]
+shape Linked<T> {
+    Next Linked<T>?
+}
 
-    Len() -> uint64
-        return len self.Value
+shape Array<T> {
+    Len() -> uint64 return len self
 
     intrinsic Append(T item) -> bool
     intrinsic Add(T item, int32 index) -> bool
@@ -100,30 +116,39 @@ shape Array<T> {
 
 shape Comparable<T> {
     abstract Compare(T other) -> int32
-    
-    // operator <(T other) -> self.Compare(other) < 0
-    // operator >(T other) -> self.Compare(other) > 0
 }
 
 shape Equatable<T> {
     abstract Equals(T other) -> bool
-
-    // operator ==(T other) -> self.Equals(other)
-    // operator !=(T other) -> !self.Equals(other)
 }
 
 shape Hashable {
     abstract Hash() -> uint64
 }
 
+shape Serializable {
+    abstract Serialize() -> string
+}
+
+shape Cloneable<T> {
+    abstract Clone() -> T
+}
+
 shape Int32 {
     static const MAX int32 = 2147483647
     static const MIN int32 = -2147483648
+
+    Negate() -> int32 return -self
 }
 
 shape Point {
     X int32
     Y int32 
+}
+
+shape Vector {
+    X int32
+    Y int32
 }
 
 print "standard library loaded"

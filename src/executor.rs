@@ -190,6 +190,9 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
                     }
                 }
 
+                // Option ??
+                (Value::None, Operator::DQuestion, _) => Ok(evaluate(runtime, *right)?),
+
                 (left, op, right) => Err(RuntimeError::Error{ span, message: format!("Invalid operation: {:?} {:?} {:?}", left, op, right) })
             }
         },
@@ -207,14 +210,16 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
             }
         }
         
-        ResolvedExpression::MemberAccess{ span, target, member} => {
+        ResolvedExpression::MemberAccess{ span, target, member, optional} => {
             match (evaluate(runtime, *target)?, member) {
                 (Value::Object(object_id, _), Symbol::Azimuth(azimuth)) => {
                     match runtime.get_slot_value(object_id, azimuth.id) {
                         Some(value) => Ok(value.clone()),
-                        None => return Err(RuntimeError::Error{span, message:format!("Member {:?} not found for {:?}", azimuth.name, object_id)}),
+                        None if optional => Ok(Value::None),
+                        None => Err(RuntimeError::Error{span, message:format!("Member {:?} not found for {:?}", azimuth.name, object_id)}),
                     }
                 }
+                (Value::None, _) if optional => Ok(Value::None),
                 (other, member) => Err(RuntimeError::Error{span, message:format!("Member access not permitted for {:?}.{:?}", other, member)}),
             }
         },
@@ -259,6 +264,9 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
                         
                         runtime.reserve_local(local, param.clone());
                     }
+                    for capture in &func.captures {
+                        runtime.ref_local(*capture, 0);
+                    }
                     
                     // Add to stack
                     runtime.call_stack.push(CallStackFunction{
@@ -276,7 +284,10 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
 
                             // Free locals
                             for param in func.input_types {
-                                runtime.clear_local(param.local);
+                                runtime.deref_local(param.local, 3);
+                            }
+                            for capture in &func.captures {
+                                runtime.deref_local(*capture, 0);
                             }
 
                             // Remove from stack
@@ -291,7 +302,7 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
 
                             // Free locals
                             for param in func.input_types {
-                                runtime.clear_local(param.local);
+                                runtime.deref_local(param.local, 4);
                             }
                             
                             // Remove from stack
@@ -308,7 +319,7 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
             }
         },
 
-        ResolvedExpression::Function{ span, has_self, input_types, output_type, func } => {
+        ResolvedExpression::Function{ span, has_self, input_types, output_type, func, captures } => {
             let output_type = evaluate_shape(runtime, output_type);
             let mut inputs = Vec::new();
             for input in input_types {
@@ -324,6 +335,7 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
                 input_types:inputs, 
                 output_type, 
                 func: *func,
+                captures
             };
             Ok(Value::Function(Box::new(function)))
         }
@@ -334,11 +346,12 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
 
 pub fn evaluate_place(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<Value, RuntimeError> {
     match expression {
-        ResolvedExpression::MemberAccess{ span, target, member} => {
+        ResolvedExpression::MemberAccess{ span, target, member, optional} => {
             match (evaluate(runtime, *target)?, member) {
                 (Value::Object(object_id, kind), Symbol::Azimuth(azimuth)) => {
                     Ok(Value::Pointer(object_id, azimuth.id, kind))
                 }
+                (Value::None, _) if optional => Ok(Value::None),
                 (other, member) => Err(RuntimeError::Error{span, message:format!("Member access not permitted for {:?}.{:?}", other, member)}),
             }
         },
@@ -353,6 +366,10 @@ pub fn evaluate_place(runtime: &mut Runtime, expression:ResolvedExpression) -> R
             match target {
                 Value::Pointer(object_id, azimuth_id, kind) => {
                     Ok(Value::ArrayElement(object_id, azimuth_id, kind, i))
+                }
+                Value::Local(id, kind) if matches!(kind, ValueKind::Array(_)) => {
+                    todo!()
+                    //Ok(Value::ArrayElement(id, kind, i))
                 }
                 other => Err(RuntimeError::Error{span, message:format!("Array access not permitted for {:?}[{}]", other, i)})
             }
@@ -573,7 +590,7 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
                 if flag { 
                     match execute_statement(runtime, *statement.clone())? {
                         ExecFlow::Normal(_) => {},
-                        ExecFlow::Declare(_, local) => runtime.clear_local(local),
+                        ExecFlow::Declare(_, local) => runtime.deref_local(local, 5),
                         ExecFlow::Break(_) => break,
                         ExecFlow::Continue(_) => continue,
                         ExecFlow::Return(span, value) => return Ok(ExecFlow::Return(span, value)),
@@ -606,11 +623,11 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
                     ExecFlow::Continue(_) => continue,
                     ExecFlow::Break(_) => break,
                     ExecFlow::Normal(_) => {},
-                    ExecFlow::Declare(_, local) => runtime.clear_local(local),
+                    ExecFlow::Declare(_, local) => runtime.deref_local(local, 2),
                     flow => return Ok(flow)
                 }
 
-                runtime.clear_local(local);
+                runtime.deref_local(local, 1);
             }
 
             Ok(ExecFlow::Normal(span))
@@ -625,12 +642,12 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
                     ExecFlow::Normal(span) => last_span = span,
                     ExecFlow::Declare(_, local) => locals.push(local),
                     flow => { 
-                        runtime.clear_locals(locals);
+                        runtime.deref_locals(locals, 6);
                         return Ok(flow);
                     }
                 }
             }
-            runtime.clear_locals(locals);
+            runtime.deref_locals(locals, 7);
             Ok(ExecFlow::Normal(last_span))
         }
 

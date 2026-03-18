@@ -1,0 +1,50 @@
+shape Weapon : Named {
+    DMG int = 1
+}
+
+shape Speeding {
+    Speed int
+}
+
+shape Flying : Speeding {
+    Z int
+}
+
+shape Creature : Named, Point, Speeding {
+    MyWeapon Weapon?
+}
+
+let names = [
+    "bob", "beeb", "bib", "bab", "christ"
+]
+
+shape Game {
+
+    static NextGame() {
+        let index = Random.Range(0, (len names) - 1)
+        let name = names[index]
+        let you := Creature
+        if Random.Bool()
+            you := Flying (
+                Speed -> Speed
+            )
+        else 
+            print "no flight"
+    }
+
+    static RunGame() {
+        let num = Random.Range(1, 10)
+        print "I'm thinking of a number between 1 and 10."
+        loop {
+            let input = IO.ReadLine()
+            if input == "\{num}" {
+                print "Yep! It was \{num}. Good job"
+                break
+            }
+            print "Nope, try again"
+        }
+        print "Time for game 2"
+        Game.NextGame()
+    }
+
+}

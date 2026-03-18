@@ -57,8 +57,10 @@ fn math_sqrt(span: Span, args: Vec<Value>, runtime: &mut Runtime) -> Result<Valu
 
 fn io_readline(span: Span, args: Vec<Value>, runtime: &mut Runtime) -> Result<Value, RuntimeError> {
     let mut result = String::new();
-    let _ = io::stdin().read_line(&mut result);
-    Ok(result.trim().to_string().into())
+    match io::stdin().read_line(&mut result) {
+        Err(_) => Ok(Value::None),
+        _ => Ok(result.trim().to_string().into()),
+    }
 }
 
 fn io_args(span: Span, args: Vec<Value>, runtime: &mut Runtime) -> Result<Value, RuntimeError> {

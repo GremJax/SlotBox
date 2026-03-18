@@ -180,3 +180,5 @@ let thingFour := Point
 seal thingFour
 thingFour =: Point
 print thingFour
+
+Game.run()

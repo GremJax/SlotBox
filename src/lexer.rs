@@ -13,7 +13,7 @@ pub enum Operator {
     Not, And, Or,
     Range, RangeLT, 
     At, Hash, Dollar,
-    Dot, Colon, DColon, Question, DQuestion,
+    Dot, QDot, Colon, DColon, Question, DQuestion,
     Assign, Attach, Detach, Arrow, FatArrow,
     IsShape, NIsShape
 }
@@ -29,6 +29,15 @@ pub const BINARY_OPERATORS: &[Operator] = &[
     Operator::BWAnd, Operator::BWOr, Operator::BWXor, Operator::BWShiftL, Operator::BWShiftR,
     Operator::And, Operator::Or, Operator::IsShape, Operator::NIsShape,
     Operator::Range, Operator::RangeLT,
+    Operator::DQuestion,
+];
+
+const OP_CHARS: &[char] = &[
+    '+', '-', '*', '/', '%',
+    '&', '|', '^', '~',
+    '=', '!', '<', '>',
+    '.', '?', ':',
+    '@', '#', '$'
 ];
 
 impl Operator {
@@ -332,85 +341,114 @@ impl Lexer {
                     _ => TokenKind::Identifier(identifier),
                 }})
             },
-            op => {
+            ch if OP_CHARS.contains(&ch) => {
                 let span= self.span();
-                let mut operator = String::new();
-                operator.push(op);
 
-                while let Some(&ch) = chars.peek() {
-                    if !WHITESPACE.contains(&ch) && !ch.is_alphanumeric() && ch != '_' {
-                        chars.next();
-                        self.column += 1;
-                        operator.push(ch);
-                    } else {
-                        break;
-                    }
-                }
-                
-                Ok(Token{span:span.clone(), kind:TokenKind::Operator(match operator.as_str() {
-                    "+" => Operator::Add,
-                    "-" => Operator::Sub,
-                    "/" => Operator::Div,
-                    "*" => Operator::Mul,
-                    "%" => Operator::Mod,
-
-                    "+=" => Operator::AddAssign,
-                    "-=" => Operator::SubAssign,
-                    "/=" => Operator::DivAssign,
-                    "*=" => Operator::MulAssign,
-                    "%=" => Operator::ModAssign,
-
-                    "&" => Operator::BWAnd,
-                    "|" => Operator::BWOr,
-                    "^" => Operator::BWXor,
-                    "~" => Operator::BWNot,
-                    "<<" => Operator::BWShiftL,
-                    ">>" => Operator::BWShiftR,
+                let operator = match ch {
+                    '+' => if self.next_is('=', chars)? {
+                            Operator::AddAssign
+                        } else { Operator::Add }
+                    '-' => if self.next_is('=', chars)? {
+                            Operator::SubAssign
+                        } else if self.next_is('>', chars)? {
+                            Operator::Arrow
+                        } else { Operator::Sub }
+                    '*' => if self.next_is('=', chars)? {
+                            Operator::MulAssign
+                        } else { Operator::Mul }
+                    '/' => if self.next_is('=', chars)? {
+                            Operator::DivAssign
+                        } else { Operator::Div }
+                    '%' => if self.next_is('=', chars)? {
+                            Operator::ModAssign
+                        } else { Operator::Mod }
                     
-                    "&=" => Operator::AndAssign,
-                    "|=" => Operator::OrAssign,
-                    "^=" => Operator::XorAssign,
-                    "<<=" => Operator::ShiftLAssign,
-                    ">>=" => Operator::ShiftRAssign,
+                    '~' => Operator::BWNot,
+                    '^' => if self.next_is('=', chars)? {
+                            Operator::XorAssign
+                        } else { Operator::BWXor }
+                    '&' => if self.next_is('&', chars)? {
+                            Operator::And
+                        } else if self.next_is('=', chars)? {
+                            Operator::AndAssign
+                        } else { Operator::BWAnd }
+                    '|' => if self.next_is('|', chars)? {
+                            Operator::Or
+                        } else if self.next_is('=', chars)? {
+                            Operator::OrAssign
+                        } else { Operator::BWOr }
 
-                    "++" => Operator::Inc,
-                    "--" => Operator::Dec,
+                    '<' => if self.next_is('<', chars)? {
+                            if self.next_is('=', chars)? {
+                                Operator::ShiftLAssign
+                            } else { Operator::BWShiftL }
+                        } else if self.next_is('=', chars)? {
+                            Operator::LTE
+                        } else { Operator::LT }
+                    '>' => if self.next_is('>', chars)? {
+                            if self.next_is('=', chars)? {
+                                Operator::ShiftRAssign
+                            } else { Operator::BWShiftR }
+                        } else if self.next_is('=', chars)? {
+                            Operator::GTE
+                        } else { Operator::GT }
 
-                    "=" => Operator::Assign,
-                    ":=" => Operator::Attach,
-                    "=:" => Operator::Detach,
-                    "->" => Operator::Arrow,
-                    "=>" => Operator::FatArrow,
+                    '!' => if self.next_is('~', chars)? {
+                            Operator::NIsShape
+                        } else if self.next_is('=', chars)? {
+                            Operator::NEqual
+                        } else { Operator::Not }
+                        
+                    '=' => if self.next_is('=', chars)? {
+                            Operator::Equal
+                        } else if self.next_is('~', chars)? {
+                            Operator::IsShape
+                        } else if self.next_is(':', chars)? {
+                            Operator::Detach
+                        } else { Operator::Assign }
+                        
+                    '.' => if self.next_is('.', chars)?  {
+                            match chars.next().unwrap() {
+                                '.' => Operator::Range,
+                                '<' => Operator::RangeLT,
+                                ch => return Err(ParseError::InvalidToken{span, token:format!("..{}",ch)}),
+                            }
+                        } else { Operator::Dot }
 
-                    "==" => Operator::Equal,
-                    "!=" => Operator::NEqual,
-                    "<" => Operator::LT,
-                    ">" => Operator::GT,
-                    "<=" => Operator::LTE,
-                    ">=" => Operator::GTE,
-
-                    "&&" => Operator::And,
-                    "||" => Operator::Or,
-                    "!" => Operator::Not,
-
-                    "=~" => Operator::IsShape,
-                    "!~" => Operator::NIsShape,
-
-                    "..." => Operator::Range,
-                    "..<" => Operator::RangeLT,
-                    "@" => Operator::At,
-                    "#" => Operator::Hash,
-                    "$" => Operator::Dollar,
-
-                    "." => Operator::Dot,
-                    ":" => Operator::Colon,
-                    "::" => Operator::DColon,
-                    "?" => Operator::Question,
-                    "??" => Operator::DQuestion,
+                    ':' => if self.next_is('=', chars)? {
+                            Operator::Attach
+                        } else if self.next_is(':', chars)? {
+                            Operator::DColon
+                        } else { Operator::Colon }
                     
-                    token => return Err(ParseError::InvalidToken{span, token:format!("{}",token)})
-                })})
+                    '?' => if self.next_is('.', chars)? {
+                            Operator::QDot
+                        } else if self.next_is('?', chars)? {
+                            Operator::DQuestion
+                        } else { Operator::Question }
+                        
+                    '@' => Operator::At,
+                    '#' => Operator::Hash,
+                    '$' => Operator::Dollar,
+                    
+                    ch => return Err(ParseError::InvalidToken{span, token:format!("{}",ch)})
+                };
+
+                Ok(Token{span:span.clone(), kind:TokenKind::Operator(operator)})
             }
+            ch => return Err(ParseError::InvalidToken{span:self.span(), token:format!("{}",ch)})
+        }
+    }
+
+    fn next_is(&mut self, next: char, chars: &mut PeekableChars) -> Result<bool, ParseError> {
+        match chars.peek() {
+            None => return Err(ParseError::EOF{span:self.span()}),
+            Some(ch) if *ch == next => {
+                chars.next();
+                self.column += 1;
+                Ok(true)
+            }
+            _ => Ok(false)
         }
     }
 

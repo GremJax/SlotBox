@@ -110,16 +110,24 @@ Functions can be given a return type. Functions must then return the appropriate
 
 Lymphnoids (aka Lambdas) are written with a group of input variables, an arrow, and a statement, totally surrounded by pipes:
 
-    |x -> print x|
+    |x -> print x|      // Single param
+    |(x, y) -> x + y|   // Multiple params
+    |() -> print "foo"| // Action
 
-    dictionary.Map(|key, value -> value := Marker(key)|)
+    dictionary.Map(|(key, value) -> value := Marker(key)|)
 
-Lymphnoid types are the same syntax and actually just function signatures in the compiler
+Lymphnoid types are the same syntax, just with types instead of names
 
-    foo(|int32, int32 -> int32| function, int32 x, int32 y) 
+    |int|
+    |(int, int) -> int|
+    |() -> string|[]
+
+Lymphnoids are actually just function signatures in the compiler, so any function works
+
+    foo(|(int32, int32) -> int32| function, int32 x, int32 y) 
         print function(x, y)
 
-    foo(|x, y -> x + y|, 5, 6)    // works
+    foo(|(x, y) -> x + y|, 5, 6)    // works
 
     sum(int32 x, int32 y) -> int32 
         return x + y
@@ -154,7 +162,7 @@ Every arithmatic operator is here!
     x <<= y
     x >>= y
 
-Comparisons are also routine. For boolean logic, the word or symbol may be used.
+Comparisons are also routine. For the boolean operators, the word or symbol may be used.
 
     x and y
     x && y

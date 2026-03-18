@@ -1,6 +1,6 @@
 use std::{collections::HashMap, fs};
 
-use crate::{AzimuthFlags, AzimuthId, FunctionInfo, GenericId, Number, ObjectId, ShapeId, Value, ValueKind, analyzer, executor::{self, OBJECT_INSTANCE, ShapeInstance}, intrinsic::IntrinsicOp, lexer::{self, Span}, parser::{self, FunctionBody, Mapping}}; 
+use crate::{AzimuthFlags, AzimuthId, FunctionSignature, GenericId, Number, ObjectId, ShapeId, Value, ValueKind, analyzer, executor::{self, OBJECT_INSTANCE, ShapeInstance}, intrinsic::IntrinsicOp, lexer::{self, Span}, parser::{self, FunctionBody, Mapping}}; 
 use parser::{RawAzimuth, Expression, Statement, ShapeExpression};
 use lexer::{Operator};
 
@@ -100,12 +100,6 @@ pub struct LocalInfo {
 pub struct GenericInfo {
     pub id: GenericId,
     pub name: Identifier,
-}
-
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct FunctionSignature {
-    pub name: Identifier,
-    pub args: Vec<ValueKind>
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -293,7 +287,8 @@ pub enum ResolvedShapeExpression {
     Applied {
         base: Symbol,
         args: Vec<ResolvedShapeExpression>,
-    }
+    },
+    Optional(Box<ResolvedShapeExpression>),
 }
 
 impl ResolvedShapeExpression {
@@ -307,6 +302,7 @@ impl ResolvedShapeExpression {
             }),
             ResolvedShapeExpression::Primitive(kind) => kind.clone(),
             ResolvedShapeExpression::Array(expr) => ValueKind::Array(Box::new(expr.kind())),
+            ResolvedShapeExpression::Optional(expr) => ValueKind::Option(Box::new(expr.kind())),
             _ => unreachable!()
         }
     }
@@ -340,6 +336,7 @@ pub enum ResolvedExpression {
         span: Span,
         target: Box<ResolvedExpression>,
         member: Symbol,
+        optional: bool,
     },
     ArrayAccess  {
         span: Span,
@@ -356,7 +353,8 @@ pub enum ResolvedExpression {
         has_self: bool,
         input_types: Vec<ResolvedFunctionParameter>,
         output_type: ResolvedShapeExpression,
-        func: Box<Option<ResolvedFunctionBody>>
+        func: Box<Option<ResolvedFunctionBody>>,
+        captures: Vec<LocalId>,
     }
 }
 
@@ -404,7 +402,11 @@ impl ResolvedExpression {
                 ValueKind::Function(info) => info.output_type.clone(),
                 _ => unreachable!()
             }
-            ResolvedExpression::Function { output_type, .. } => output_type.kind(),
+            ResolvedExpression::Function { input_types, output_type, has_self, .. } => {
+                let resolved_out = output_type.kind();
+                let resolved_in = input_types.iter().map(|i| i.shape.kind()).collect();
+                ValueKind::Function(Box::new(FunctionSignature{ input_types:resolved_in, output_type:resolved_out, has_self:*has_self }))
+            }
         }
     }
 }
@@ -808,6 +810,12 @@ impl Analyzer {
                         }
                     },
 
+                    // DQuestion optimization
+                    (ResolvedExpression::Value(span, Value::None), right) => match operator {
+                        Operator::DQuestion => Ok(right),
+                        _ => Ok(ResolvedExpression::BinaryOp{span:span.clone(), left: Box::new(ResolvedExpression::Value(span, Value::None)), operator, right: Box::new(right)})
+                    },
+
                     // Default
                     (left, right) => {
                         Ok(ResolvedExpression::BinaryOp{span, left: Box::new(left), operator, right: Box::new(right)})
@@ -831,7 +839,7 @@ impl Analyzer {
                 Ok(ResolvedExpression::Ternary{span, condition:Box::new(condition), true_expr:Box::new(true_expr), else_expr:Box::new(else_expr)})
             }
 
-            Expression::MemberAccess{ span, target, qualifier, member} => {
+            Expression::MemberAccess{ span, target, qualifier, member, optional} => {
                 let target = self.resolve_expression(*target, scope)?;
                 let qualifier = match qualifier {
                     Some(shape_expr) => Some(self.resolve_shape_expression(shape_expr, scope)?),
@@ -842,7 +850,8 @@ impl Analyzer {
 
                     Ok(ResolvedExpression::MemberAccess{span, 
                         target:Box::new(target),
-                        member:member.clone()
+                        member:member.clone(),
+                        optional
                     })
 
                 } else {
@@ -900,13 +909,12 @@ impl Analyzer {
                 Ok(ResolvedExpression::FunctionCall{span, target:Box::new(target), args:resolved_args})
             },
 
-            Expression::Function {span, has_self, input_types, output_type, func } => {
+            Expression::Function {span, has_self, input_types, output_type, func, captures } => {
 
                 let new_scope = self.create_scope(scope);
 
                 let mut resolved_inputs = Vec::new();
                 for input in input_types {
-
                     let value_type = self.resolve_shape_expression(input.value_type, scope)?;
                     let symbol = self.declare_local(new_scope, input.identifier, value_type.clone());
 
@@ -918,6 +926,17 @@ impl Analyzer {
                     let resolved_input = ResolvedFunctionParameter{ shape:value_type, local:id };
 
                     resolved_inputs.push(resolved_input);
+                }
+
+                let mut resolved_captures = Vec::new();
+                for capture in captures {
+                    let symbol = self.get_symbol(scope, capture);
+
+                    let id = match symbol {
+                        Some(Symbol::Local(info)) => info.id,
+                        _ => todo!()
+                    };
+                    resolved_captures.push(id);
                 }
 
                 let output_type = self.resolve_shape_expression(output_type, new_scope)?;
@@ -940,7 +959,8 @@ impl Analyzer {
                 Ok(ResolvedExpression::Function{span, has_self, 
                     input_types:resolved_inputs, 
                     output_type, 
-                    func:Box::new(body)
+                    func:Box::new(body),
+                    captures:resolved_captures
                 })
             }
 
@@ -956,6 +976,7 @@ impl Analyzer {
             }
             ShapeExpression::Primitive(kind) => Ok(ResolvedShapeExpression::Primitive(kind)),
             ShapeExpression::Array(expr) => Ok(ResolvedShapeExpression::Array(Box::new(self.resolve_shape_expression(*expr, scope)?))),
+            ShapeExpression::Optional(expr) => Ok(ResolvedShapeExpression::Optional(Box::new(self.resolve_shape_expression(*expr, scope)?))),
             ShapeExpression::Applied { base, args } => {
                 let base = self.get_shape(scope, base.clone())
                     .expect(format!("Shape not found in scope: {:?}", base).as_str()).clone();
@@ -966,15 +987,15 @@ impl Analyzer {
                 }
                 Ok(ResolvedShapeExpression::Applied{ base, args: resolved})
             },
-            ShapeExpression::Function { func } => {
-                let output_type = self.resolve_shape_expression(func.output_type, scope)?.kind();
+            ShapeExpression::FunctionSignature(signature) => {
+                let output_type = self.resolve_shape_expression(signature.output_type, scope)?.kind();
 
                 let mut input_types = Vec::new();
-                for input in func.input_types {
-                    input_types.push(self.resolve_shape_expression(input.value_type, scope)?.kind())
+                for input in signature.input_types {
+                    input_types.push(self.resolve_shape_expression(input, scope)?.kind())
                 }
 
-                let info = FunctionInfo{id: 0, input_types, output_type, has_self: func.has_self };
+                let info = FunctionSignature{input_types, output_type, has_self: signature.has_self };
 
                 Ok(ResolvedShapeExpression::Primitive(ValueKind::Function(Box::new(info))))
             }

@@ -1,4 +1,5 @@
 using "std"
+using "gametest"
 
 print "\n ---- defining shapes ---- \n"
 
@@ -17,6 +18,12 @@ shape Thing {
     CauseRuntimeError() {
         print self.X / 0
     }
+
+    static PrintOperation(|int -> int| operation, int x) {
+        print operation(x)
+    }
+
+    static AddOne(int x) -> int return x + 1
 }
 
 shape SubThing : Thing(A -> X) {
@@ -65,3 +72,14 @@ let read = IO.ReadLine()
 print "echo \{read}"
 
 //object.CauseRuntimeError()
+
+Thing.PrintOperation(Thing.AddOne, 5)
+
+Thing.PrintOperation(|int x -> int {return x + 1}|, 10)
+
+let program = |() -> void {print "hello"}|
+Executor.Run([program])
+
+print "Benchmark completed"
+
+Game.RunGame()

@@ -1,6 +1,6 @@
 use std::{collections::HashMap, fs};
 
-use crate::{AzimuthFlags, AzimuthId, FunctionSignature, GenericId, Number, ObjectId, ShapeId, Value, ValueKind, analyzer, executor::{self, OBJECT_INSTANCE, ShapeInstance}, intrinsic::IntrinsicOp, lexer::{self, Span}, parser::{self, FunctionBody, Mapping}}; 
+use crate::{AzimuthFlags, AzimuthId, FunctionSignature, GenericId, Number, ObjectId, ShapeId, Value, ValueKind, analyzer, executor::{self, OBJECT_INSTANCE, ShapeInstance}, intrinsic::IntrinsicOp, lexer::{self, Span}, loader::Loader, parser::{self, FunctionBody, Mapping}}; 
 use parser::{RawAzimuth, Expression, Statement, ShapeExpression};
 use lexer::{Operator};
 
@@ -210,6 +210,11 @@ pub enum ResolvedStatement {
         cond: ResolvedExpression,
         inc: Box<ResolvedStatement>,
         statement: Box<ResolvedStatement>,
+    },
+    Try {
+        span: Span, 
+        try_statement: Box<ResolvedStatement>,
+        catch_statement: Box<Option<ResolvedStatement>>,
     },
     Assign { span: Span, target: ResolvedExpression, value: ResolvedExpression },
     Seal { span: Span, target: ResolvedExpression, },
@@ -1032,7 +1037,7 @@ impl Analyzer {
             Statement::Expression {span, expr} => Ok(ResolvedStatement::Expression{span, expr:self.resolve_expression(expr, scope)?}),
             Statement::Using { span, package } => {
                 if let Ok(source) = fs::read_to_string(format!("/workspaces/SlotBox/src/{}.az", package)) {
-                    let tokens = match lexer::tokenize(&source){
+                    let tokens = match lexer::tokenize(&source, false){
                         Ok(tokens) => tokens,
                         Err(error) => return Err(CompileError::IoError { span, message: format!("Could not parse {}.az: {}", package, error) }),
                     };
@@ -1043,6 +1048,8 @@ impl Analyzer {
                 }
                 else { Err(CompileError::IoError { span, message: format!("Could not find package {}.az", package) }) }
             }
+            Statement::Namespace{ span, name, content } => todo!(),
+            Statement::DeclareAzimuth{ span, azimuth } => todo!(),
             Statement::DeclareShape { span, name, slot_ids, parents, mappings, generics } => {
                 let my_scope = self.get_scope_mut(scope);
                 if my_scope.symbols.contains_key(&name) { return Err(CompileError::DuplicateSymbol{span, name}); }
@@ -1154,7 +1161,15 @@ impl Analyzer {
                 let resolved_statement = self.resolve_statement(*statement, scope)?;
                 Ok(ResolvedStatement::While{span, condition: resolved_condition, statement: Box::new(resolved_statement)})
             }
-            
+            Statement::Try { span, try_statement, catch_statement } => {
+                let resolved_try = self.resolve_statement(*try_statement, scope)?;
+
+                let resolved_catch = if let Some(statement) = *catch_statement {
+                    Some(self.resolve_statement(statement, scope)?)
+                } else { None };
+
+                Ok(ResolvedStatement::Try{span, try_statement:Box::new(resolved_try), catch_statement:Box::new(resolved_catch)})
+            }
             Statement::For { span, local, target, statement } => {
                 let target = self.resolve_expression(target, scope)?;
 
@@ -1271,12 +1286,14 @@ impl Analyzer {
             resolved.push(self.resolve_statement(statement, 0)?);
         }
     
-        println!("\n Resolved Ast: \n{:?}", resolved);
+        //println!("\n Resolved Ast: \n{:?}", resolved);
         Ok(resolved)
     }
 }
 
-pub fn analyze(statements: Vec<Statement>) -> Result<Vec<ResolvedStatement>, CompileError> {
+pub fn analyze(loader: Loader, statements: Vec<Statement>) -> Result<Vec<ResolvedStatement>, CompileError> {
     let mut analyzer = Analyzer::new();
+    
+    println!("\nLoaded namespaces: {:?}\n", loader.root);
     analyzer.analyze(statements)
 }

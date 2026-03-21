@@ -4,6 +4,7 @@ use crate::analyzer::{CompileError, LocalId};
 use crate::executor::OBJECT_INSTANCE;
 use crate::intrinsic::IntrinsicOp;
 use crate::lexer::{self, Keyword, Operator, Span, Token, TokenKind, UNARY_OPERATORS};
+use crate::loader::{AtlasLocation, AtlasMapping};
 use crate::{AzimuthFlags, Function, FunctionSignature, Value, ValueKind, intrinsic};
 
 #[derive(Debug, Clone)]
@@ -13,7 +14,9 @@ pub enum ParseError {
     UnexpectedToken { span: Span, token: TokenKind, loc: String },
     IncorrectToken { span: Span, token: TokenKind, expected: String, loc: String },
     IllegalModifier { span: Span, illegal: String, conflict: String },
-    EOF { span: Span }
+    NotHighInNamespace { span: Span, identifier: String },
+    NamespaceAzimuthNonStatic { span: Span, identifier: String },
+    EOF(String)
 }
 
 impl std::fmt::Display for ParseError {
@@ -29,18 +32,24 @@ impl std::fmt::Display for ParseError {
                 write!(f, "{}: Unexpected token in {}: {:?}", span, loc, token),
 
             ParseError::IncorrectToken { span, token, expected, loc } => 
-                write!(f, "{}: Incorrect token in {}: {:?}, expected {}", span, loc, token, expected),
+                write!(f, "{}: Expected {:?} in {}, got {:?}", span, expected, loc, token),
 
             ParseError::IllegalModifier { span, illegal, conflict } => 
                 write!(f, "{}: Azimuth can not be {} and {}", span, conflict, illegal),
                 
-            ParseError::EOF { span } => 
-                write!(f, "{}: Unexpected end of file", span),
+            ParseError::NotHighInNamespace{ span, identifier } => 
+                write!(f, "{}: Declaration was not in the highest level of namespace: {}", span, identifier),
+                
+            ParseError::NamespaceAzimuthNonStatic{ span, identifier } => 
+                write!(f, "{}: Azimuth in non-shape namespace is not static: {}", span, identifier),
+                
+            ParseError::EOF(loc) => 
+                write!(f, "Unexpected end of file while parsing {}", loc),
         }
     }
 }
 
-type Identifier = String;
+pub type Identifier = String;
 
 #[derive(Debug, Clone)]
 enum Presence {
@@ -157,6 +166,15 @@ pub struct RawAzimuth {
 #[derive(Debug, Clone)]
 pub enum Statement {
     Using { span: Span, package: String },
+    DeclareAzimuth { 
+        span: Span, 
+        azimuth: RawAzimuth,
+    },
+    Namespace {
+        span: Span,
+        name: Identifier,
+        content: Vec<Statement>,
+    },
     DeclareShape { 
         span: Span, 
         name: Identifier, 
@@ -196,6 +214,11 @@ pub enum Statement {
         cond: Expression,
         inc: Box<Statement>,
         statement: Box<Statement>,
+    },
+    Try {
+        span: Span, 
+        try_statement: Box<Statement>,
+        catch_statement: Box<Option<Statement>>,
     },
     Assign { span: Span, target: Expression, value: Expression, },
     AssignAugmented { span: Span, target: Expression, value: Expression, operator: Operator },
@@ -1041,6 +1064,30 @@ fn parse_statement(tokens: &mut PeekableTokens) -> Result<Statement, ParseError>
             Ok(Statement::Block(statements))
         },
 
+        // Namespace
+        TokenKind::Keyword(Keyword::Namespace) => {
+            tokens.next(); // Consume keyword
+
+            let name = match next(tokens, format!("namespace declaration"))?.kind {
+                TokenKind::Identifier(name) => name.clone(),
+                token => return Err(ParseError::IncorrectToken { span, token, expected: format!("namespace identifier"), loc:format!("namespace declaration") }),
+            };
+
+            let mut statements = Vec::new();
+            while let Some(token) = tokens.peek() {
+                match token.kind {
+                    TokenKind::RightBrace => {
+                        tokens.next(); // Consume brace
+                        break
+                    }
+                    TokenKind::EOF => { return Err(ParseError::IncorrectToken { span, token:token.kind.clone(), expected:format!("}}"), loc:format!("namespace content") }); }
+                    _ => statements.push(parse_statement(tokens)?)
+                }
+            }
+
+            Ok(Statement::Namespace{span, name, content:statements})
+        },
+
         // If
         TokenKind::Keyword(Keyword::If) => {
             tokens.next(); // Consume if
@@ -1111,6 +1158,24 @@ fn parse_statement(tokens: &mut PeekableTokens) -> Result<Statement, ParseError>
             }
         },
 
+        // Try
+        TokenKind::Keyword(Keyword::Try) => {
+            tokens.next(); // Consume try
+
+            let try_statement = parse_statement(tokens)?;
+
+            let catch_token = tokens.peek().unwrap();
+            let catch_statement = match catch_token.kind {
+                TokenKind::Keyword(Keyword::Catch) => {
+                    tokens.next(); // Consume catch
+                    Some(parse_statement(tokens)?)
+                }
+                _ => None
+            };
+
+            Ok(Statement::Try{ span, try_statement: Box::new(try_statement), catch_statement: Box::new(catch_statement) })
+        },
+
         // Returns
         TokenKind::Keyword(Keyword::Break) => {
             tokens.next();
@@ -1133,6 +1198,128 @@ fn parse_statement(tokens: &mut PeekableTokens) -> Result<Statement, ParseError>
     }
 }
 
+pub struct ParsedAtlas{
+    pub name: Identifier,
+    pub dependencies: Option<Vec<Identifier>>,
+    pub mappings: Vec<AtlasMapping>,
+}
+
+pub fn parse_atlas(tokens: &mut PeekableTokens) -> Result<ParsedAtlas, ParseError> {
+    let mut name = format!("");
+
+    // Dependencies
+    let dependencies = match tokens.peek().unwrap().kind {
+        TokenKind::Keyword(Keyword::Dependencies) => {
+            tokens.next();
+            let mut dependencies = Vec::new();
+
+            // Expect brace
+            match tokens.next() {
+                Some(token) if matches!(token.kind, TokenKind::LeftBrace) => {},
+                Some(other) => return Err(ParseError::IncorrectToken { span:other.span, token:other.kind, expected:format!("{{"), loc:format!("atlas dependencies") }),
+                None => return Err(ParseError::EOF(format!("atlas dependencies")))
+            }
+
+            while let Some(token) = tokens.next() {
+                let span = token.span.clone();
+                match token.kind {
+                    TokenKind::RightBrace => break,
+                    TokenKind::Identifier(name) => {
+                        dependencies.push(name);
+                        todo!()
+                    }
+                    other => return Err(ParseError::UnexpectedToken { span, token:other, loc:format!("atlas dependencies") }),
+                }
+            }
+
+            Some(dependencies)
+        }
+        _ => None
+    };
+    
+    // Chart
+    let token = next(tokens, format!("atlas chart"))?;
+    match token.kind {
+        TokenKind::Keyword(Keyword::Chart) => {},
+        other => return Err(ParseError::IncorrectToken { span:token.span, token:other, expected:format!("chart"), loc:format!("atlas chart") }),
+    }
+
+    let token = next(tokens, format!("atlas chart"))?;
+    match token.kind {
+        TokenKind::Identifier(ident) => {
+            name = ident;
+        },
+        other => return Err(ParseError::IncorrectToken { span:token.span, token:other, expected:format!("module name"), loc:format!("atlas chart") }),
+    }
+    
+    let token = next(tokens, format!("atlas chart"))?;
+    match token.kind {
+        TokenKind::LeftBrace => {}
+        other => return Err(ParseError::IncorrectToken { span:token.span, token:other, expected:format!("{{"), loc:format!("atlas chart") }),
+    }
+    
+    let mut mappings = Vec::new();
+    loop {
+        let token = next(tokens, format!("atlas chart"))?;
+        match token.kind {
+            TokenKind::RightBrace => break,
+            TokenKind::Identifier(name) => {
+                // Arrow
+                let token = next(tokens, format!("atlas chart"))?;
+                match token.kind {
+                    TokenKind::Operator(Operator::Arrow) => {}
+                    other => return Err(ParseError::IncorrectToken { span:token.span, token:other, expected:format!("->"), loc:format!("atlas chart") }),
+                }
+                
+                // Mapping
+                let filename = parse_atlas_filename(tokens)?;
+
+                mappings.push(AtlasMapping{from:name, to:filename});
+            }
+            other => return Err(ParseError::UnexpectedToken { span:token.span, token:other, loc:format!("atlas chart") }),
+        }
+    }
+    
+    let token = next(tokens, format!("atlas"))?;
+    match token.kind {
+        TokenKind::EOF => {}
+        other => return Err(ParseError::IncorrectToken { span:token.span, token:other, expected:format!("End Of File"), loc:format!("atlas") }),
+    }
+
+    Ok(ParsedAtlas{name, dependencies, mappings})
+}
+
+pub fn parse_atlas_filename(tokens: &mut PeekableTokens) -> Result<AtlasLocation, ParseError> {
+
+    let token = next(tokens, format!("atlas namespace location"))?;
+    let location = match token.kind {
+        TokenKind::Identifier(name) => name,
+        other => return Err(ParseError::UnexpectedToken { span:token.span, token:other, loc:format!("atlas namespace location") })
+    };
+
+    let token = tokens.peek();
+    let subspace = match token {
+        Some(token) if matches!(token.kind, TokenKind::Operator(Operator::DColon)) => {
+            tokens.next(); // Consume ::
+            let token = next(tokens, format!("atlas subspace identifier"))?;
+            match token.kind {
+                TokenKind::Identifier(name) => Some(name),
+                other => return Err(ParseError::UnexpectedToken { span:token.span, token:other, loc:format!("atlas subspace identifier") })
+            }
+        }
+        _ => None,
+    };
+
+    Ok(AtlasLocation{url:location, subspace})
+}
+
+pub fn next(tokens: &mut PeekableTokens, loc: String) -> Result<Token, ParseError> {
+    match tokens.next() {
+        Some(token) => Ok(token),
+        None => Err(ParseError::EOF(loc)),
+    }
+}
+
 pub fn parse(input: Vec<Token>) -> Result<Vec<Statement>, ParseError> {
     let mut statements = Vec::new();
     let mut tokens = input.into_iter().peekable();
@@ -1144,6 +1331,11 @@ pub fn parse(input: Vec<Token>) -> Result<Vec<Statement>, ParseError> {
         }
     }
     
-    println!("\n Parsed Ast: \n{:?}", statements);
+    //println!("\n Parsed Ast: \n{:?}", statements);
     Ok(statements)
+}
+
+pub fn parse_atlas_file(input: Vec<Token>) -> Result<ParsedAtlas, ParseError> {
+    let mut tokens = input.into_iter().peekable();
+    Ok(parse_atlas(&mut tokens)?)
 }

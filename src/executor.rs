@@ -574,7 +574,16 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
                     }
                     Ok(ExecFlow::Normal(span))
                 }
-                other => return Err(RuntimeError::Error{span, message:format!("If condition was not true or false: {:?}", other)}),
+                other => Err(RuntimeError::Error{span, message:format!("If condition was not true or false: {:?}", other)}),
+            }
+        }
+
+        ResolvedStatement::Try { span, try_statement, catch_statement } => {
+            let result = execute_statement(runtime, *try_statement);
+            match (&result, *catch_statement) {
+                (Err(_), Some(catch_statement)) => execute_statement(runtime, catch_statement),
+                (Err(_), _) => Ok(ExecFlow::Normal(span)),
+                _ => result,
             }
         }
 

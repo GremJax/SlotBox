@@ -1,0 +1,12 @@
+dependencies {
+    std -> lang/std/atlas.atls              // Dependency urls
+}
+chart MyProgram {
+    GameTest        -> gametest.az          // GameTest namespace from file
+    Box             -> utils.az::Box        // Extract interior namespace
+    trialhead Main  -> main.az              // Entry point is the "Main" namespace, one per atlas
+    Physics         -> physics.atls         // Atlas chain, use other atlas as namespace, must match name
+    hidden Secrets  -> secrets/secrets.az   // Internal namespace, only this atlas can access
+    lazy Nuke       -> nuke.az              // Lazy loading, only loaded when used at runtime
+    Rendering       -> video/rendering      // Entire directory into one namespace
+}

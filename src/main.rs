@@ -3,13 +3,14 @@ use ordered_float::OrderedFloat;
 
 use crate::{
     analyzer::{AzimuthInfo, LocalId, ObjectInfo, ResolvedExpression, ResolvedFunctionBody, ResolvedStatement, ShapeInfo, Symbol}, 
-    executor::{RuntimeError, ShapeInstance}, lexer::Span,
+    executor::{RuntimeError, ShapeInstance}, lexer::Span, loader::Loader,
 };
 
-pub mod parser;
 pub mod lexer;
-pub mod executor;
+pub mod parser;
+pub mod loader;
 pub mod analyzer;
+pub mod executor;
 pub mod intrinsic;
 
 // Formerly SlotBox
@@ -1104,7 +1105,7 @@ fn main() {
         Ok(source) => source,
     };
 
-    let tokens = match lexer::tokenize(&source){
+    let tokens = match lexer::tokenize(&source, false){
         Err(error) => panic!("Could not parse main.az:\n{}", error),
         Ok(tokens) => tokens,
     };
@@ -1114,7 +1115,12 @@ fn main() {
         Ok(ast) => ast,
     };
 
-    let resolved_ast = match analyzer::analyze(ast){
+    let loader = match loader::load("/workspaces/SlotBox/src", "atlas.atls") {
+        Err(error) => panic!("{}",error),
+        Ok(loader) => loader,
+    };
+
+    let resolved_ast = match analyzer::analyze(loader, ast){
         Err(error) => panic!("Could not compile main.az:\n{}", error),
         Ok(resolved_ast) => resolved_ast,
     };

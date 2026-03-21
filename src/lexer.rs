@@ -63,12 +63,20 @@ impl Operator {
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum Keyword {
+    // Atlas
     Namespace, Using,
+    Chart, Dependencies,
+    Lazy, Hidden, Trailhead,
+
+    // Definitions
     Shape, Let,
     Static, Seal, Locked, Const, Abstract, Intrinsic,
     Before, After, Next,
     Func, PSelf, Attach, Detach,
+
+    // Statements
     If, Else, Switch,
+    Try, Catch,
     While, Loop, For, In,
     Break, Return, Continue, Throw,
     Print,
@@ -78,6 +86,12 @@ pub enum Keyword {
 pub struct Span {
     pub line: usize,
     pub column: usize,
+}
+
+impl Span {
+    pub fn new(line: usize, column: usize) -> Self {
+        Span{line, column}
+    }
 }
 
 impl fmt::Display for Span {
@@ -210,6 +224,51 @@ impl Lexer {
         Ok(Token{span:self.span(), kind:TokenKind::String(string)})
     }
 
+    pub fn parse_token_atlas(&mut self, ch:char, chars: &mut PeekableChars) -> Result<Token, ParseError> {
+        match ch {
+            '{' => Ok(Token{span:self.span(), kind:TokenKind::LeftBrace}),
+            '}' => Ok(Token{span:self.span(), kind:TokenKind::RightBrace}),
+            ',' => Ok(Token{span:self.span(), kind:TokenKind::Comma}),
+
+            ':' if matches!(chars.peek(), Some(':')) => {
+                chars.next();
+                self.column += 1;
+                Ok(Token{span:self.span(), kind:TokenKind::Operator(Operator::DColon)})
+            }
+            '-' if matches!(chars.peek(), Some('>')) => {
+                chars.next();
+                self.column += 1;
+                Ok(Token{span:self.span(), kind:TokenKind::Operator(Operator::Arrow)})
+            }
+
+            _ => {
+                let span= self.span();
+                let mut identifier = String::new();
+                identifier.push(ch);
+
+                while let Some(&ch) = chars.peek() {
+                    if !WHITESPACE.contains(&ch) {
+                        identifier.push(ch);
+                        chars.next();
+                        self.column += 1;
+                    } else {
+                        break;
+                    }
+                }
+
+                Ok(Token{span, kind: match identifier.as_str() {
+                    "dependencies" => TokenKind::Keyword(Keyword::Dependencies),
+                    "chart" => TokenKind::Keyword(Keyword::Chart),
+                    "lazy" => TokenKind::Keyword(Keyword::Lazy),
+                    "hidden" => TokenKind::Keyword(Keyword::Hidden),
+                    "trailhead" => TokenKind::Keyword(Keyword::Trailhead),
+
+                    _ => TokenKind::Identifier(identifier),
+                }})
+            }
+        }
+    }
+
     pub fn parse_token(&mut self, ch:char, chars: &mut PeekableChars) -> Result<Token, ParseError> {
         match ch {
             '0'..='9' => {
@@ -288,6 +347,8 @@ impl Lexer {
                     "if" => TokenKind::Keyword(Keyword::If),
                     "else" => TokenKind::Keyword(Keyword::Else),
                     "switch" => TokenKind::Keyword(Keyword::Switch),
+                    "try" => TokenKind::Keyword(Keyword::Try),
+                    "catch" => TokenKind::Keyword(Keyword::Catch),
                     "while" => TokenKind::Keyword(Keyword::While),
                     "loop" => TokenKind::Keyword(Keyword::Loop),
                     "for" => TokenKind::Keyword(Keyword::For),
@@ -341,7 +402,7 @@ impl Lexer {
                     _ => TokenKind::Identifier(identifier),
                 }})
             },
-            ch if OP_CHARS.contains(&ch) => {
+            _ if OP_CHARS.contains(&ch) => {
                 let span= self.span();
 
                 let operator = match ch {
@@ -442,7 +503,7 @@ impl Lexer {
 
     fn next_is(&mut self, next: char, chars: &mut PeekableChars) -> Result<bool, ParseError> {
         match chars.peek() {
-            None => return Err(ParseError::EOF{span:self.span()}),
+            None => return Err(ParseError::EOF(format!(""))),
             Some(ch) if *ch == next => {
                 chars.next();
                 self.column += 1;
@@ -452,14 +513,19 @@ impl Lexer {
         }
     }
 
-    pub fn tokenize(&mut self, input: &str) -> Result<Vec<Token>, ParseError> {
+    pub fn tokenize(&mut self, input: &str, atlas: bool) -> Result<Vec<Token>, ParseError> {
         let mut tokens = Vec::new();
         let mut chars = input.chars().peekable();
         
         while let Some(ch) = chars.next() {
             self.column += 1;
             if self.ignore_whitespace(ch, &mut chars) { continue }
-            tokens.push(self.parse_token(ch, &mut chars)?)
+
+            if atlas {
+                tokens.push(self.parse_token_atlas(ch, &mut chars)?)
+            } else {
+                tokens.push(self.parse_token(ch, &mut chars)?)
+            }
         }
 
         tokens.push(Token{span:self.span(), kind:TokenKind::EOF});
@@ -467,6 +533,6 @@ impl Lexer {
     }
 }
 
-pub fn tokenize(input: &str) -> Result<Vec<Token>, ParseError> {
-    Lexer::new().tokenize(input)
+pub fn tokenize(input: &str, atlas: bool) -> Result<Vec<Token>, ParseError> {
+    Lexer::new().tokenize(input, atlas)
 }

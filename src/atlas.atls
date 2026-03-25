@@ -1,3 +1,0 @@
-chart Test {
-    Main    -> main.az
-}

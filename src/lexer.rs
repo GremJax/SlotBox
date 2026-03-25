@@ -82,21 +82,22 @@ pub enum Keyword {
     Print,
 }
 
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Hash, PartialEq, Eq)]
 pub struct Span {
     pub line: usize,
     pub column: usize,
+    pub file: String,
 }
 
 impl Span {
-    pub fn new(line: usize, column: usize) -> Self {
-        Span{line, column}
+    pub fn new(line: usize, column: usize, file: String) -> Self {
+        Span{line, column, file}
     }
 }
 
 impl fmt::Display for Span {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "[{}:{}]", self.line, self.column)
+        write!(f, "{}-[{}:{}]", self.file, self.line, self.column)
     }
 }
 
@@ -135,23 +136,25 @@ type PeekableChars<'a> = std::iter::Peekable<std::str::Chars<'a>>;
 pub struct Lexer {
     line: usize,
     column: usize,
+    file: String,
 
     interp_stack: Vec<usize>,
     depth: usize,
 }
 
 impl Lexer {
-    pub fn new() -> Self {
+    pub fn new(file:String) -> Self {
         Lexer { 
             line: 1, 
             column: 1,
+            file,
             interp_stack: Vec::new(),
             depth: 0, 
         }
     }
 
     pub fn span(&self) -> Span {
-        Span {line: self.line, column:self.column}
+        Span {line: self.line, column:self.column, file: self.file.clone()}
     }
 
     pub fn ignore_whitespace(&mut self, ch:char, chars: &mut PeekableChars) -> bool {
@@ -533,6 +536,6 @@ impl Lexer {
     }
 }
 
-pub fn tokenize(input: &str, atlas: bool) -> Result<Vec<Token>, ParseError> {
-    Lexer::new().tokenize(input, atlas)
+pub fn tokenize(input: &str, filename:String, atlas: bool) -> Result<Vec<Token>, ParseError> {
+    Lexer::new(filename).tokenize(input, atlas)
 }

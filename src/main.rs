@@ -551,10 +551,10 @@ impl Runtime {
     }
 
     fn create_shape(&mut self, info: ShapeInfo) {
-        let static_object_id = match *info.static_id {
-            Some(Symbol::Object(info)) => {
+        let static_object_id = match info.static_id {
+            Some(info) => {
                 let id = info.id.clone();
-                self.create_object(info);
+                self.create_object(*info);
                 id
             }
             _ => 0,   
@@ -562,12 +562,7 @@ impl Runtime {
 
         let mut def_mappings = HashMap::new();
         for mapping in info.mappings {
-            match (mapping.to, mapping.from) {
-                (Symbol::Azimuth(to), Symbol::Azimuth(from)) => {
-                    def_mappings.insert(to.id, from.id);
-                }
-                _ => panic!("mappings not azimuth symbols")
-            }
+            def_mappings.insert(mapping.to.id, mapping.from.id);
         }
 
         let shape = Shape {
@@ -604,9 +599,9 @@ impl Runtime {
             let state_id = object.allocate_slot();
             object.slot_mapping.push((az_state, state_id));
 
-            match *info.default_value.clone() {
+            match info.default_value {
                 Some(expr) => {
-                    let evaluated: Value = executor::evaluate(self, expr).unwrap();
+                    let evaluated: Value = executor::evaluate(self, *expr).unwrap();
                     self.set_slot_value(static_object_id, info.id, evaluated);
                 }
                 _ => {}
@@ -1099,29 +1094,13 @@ impl Runtime {
 //}
 
 fn main() {
-
-    let source = match fs::read_to_string("/workspaces/SlotBox/src/main.az") {
-        Err(_) => panic!("Could not find main.az"),
-        Ok(source) => source,
-    };
-
-    let tokens = match lexer::tokenize(&source, false){
-        Err(error) => panic!("Could not parse main.az:\n{}", error),
-        Ok(tokens) => tokens,
-    };
-
-    let ast = match parser::parse(tokens) {
-        Err(error) => panic!("Could not parse main.az:\n{}", error),
-        Ok(ast) => ast,
-    };
-
-    let loader = match loader::load("/workspaces/SlotBox/src", "atlas.atls") {
-        Err(error) => panic!("{}",error),
+    let loader = match loader::load("/workspaces/SlotBox/src/lang", "atlas.atls") {
+        Err(error) => panic!("Could not load atlas.atls: {}",error),
         Ok(loader) => loader,
     };
 
-    let resolved_ast = match analyzer::analyze(loader, ast){
-        Err(error) => panic!("Could not compile main.az:\n{}", error),
+    let resolved_ast = match analyzer::analyze(loader){
+        Err(error) => panic!("Could not compile:\n{}", error),
         Ok(resolved_ast) => resolved_ast,
     };
 

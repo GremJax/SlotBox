@@ -4,7 +4,7 @@ use crate::analyzer::{CompileError, LocalId};
 use crate::executor::OBJECT_INSTANCE;
 use crate::intrinsic::IntrinsicOp;
 use crate::lexer::{self, Keyword, Operator, Span, Token, TokenKind, UNARY_OPERATORS};
-use crate::loader::{AtlasLocation, AtlasMapping};
+use crate::loader::{AtlasLocation, AtlasMapping, NamespaceId};
 use crate::{AzimuthFlags, Function, FunctionSignature, Value, ValueKind, intrinsic};
 
 #[derive(Debug, Clone)]
@@ -138,15 +138,16 @@ pub struct RawFunctionSignature {
 
 #[derive(Debug, Clone)]
 pub enum ShapeExpression {
-    Shape(Identifier),
-    Primitive(ValueKind),
-    Array(Box<ShapeExpression>),
+    Shape(Span, Identifier),
+    Primitive(Span, ValueKind),
+    Array(Span, Box<ShapeExpression>),
     Applied {
+        span: Span,
         base: Identifier,
         args: Vec<ShapeExpression>,
     },
-    FunctionSignature(Box<RawFunctionSignature>),
-    Optional(Box<ShapeExpression>),
+    FunctionSignature(Span, Box<RawFunctionSignature>),
+    Optional(Span, Box<ShapeExpression>),
 }
 
 #[derive(Debug, Clone)]
@@ -165,7 +166,7 @@ pub struct RawAzimuth {
 
 #[derive(Debug, Clone)]
 pub enum Statement {
-    Using { span: Span, package: String },
+    Using { span: Span, package: NamespaceId },
     DeclareAzimuth { 
         span: Span, 
         azimuth: RawAzimuth,
@@ -415,9 +416,9 @@ fn parse_shape_expression(tokens: &mut PeekableTokens) -> Result<ShapeExpression
     let span = token.span.clone();
 
     let mut base = match token.kind {
-        TokenKind::Identifier(identifier) => ShapeExpression::Shape(identifier),
-        TokenKind::Type(kind) => ShapeExpression::Primitive(kind),
-        TokenKind::Operator(Operator::BWOr) => parse_function_signature(span, tokens)?,
+        TokenKind::Identifier(identifier) => ShapeExpression::Shape(span.clone(), identifier),
+        TokenKind::Type(kind) => ShapeExpression::Primitive(span.clone(), kind),
+        TokenKind::Operator(Operator::BWOr) => parse_function_signature(span.clone(), tokens)?,
         other => return Err(ParseError::UnexpectedToken { span, token:other, loc:format!("shape expression") }),
     };
 
@@ -438,11 +439,11 @@ fn parse_shape_expression(tokens: &mut PeekableTokens) -> Result<ShapeExpression
         }
 
         let base_identifier = match base {
-            ShapeExpression::Shape(identifier) => identifier,
+            ShapeExpression::Shape(_, identifier) => identifier,
             other => todo!()
         };
 
-        base = ShapeExpression::Applied {
+        base = ShapeExpression::Applied { span:span.clone(), 
             base: base_identifier,
             args,
         }
@@ -460,12 +461,12 @@ fn parse_shape_expression(tokens: &mut PeekableTokens) -> Result<ShapeExpression
                     return Err(ParseError::IncorrectToken { span:token.span.clone(), token: token.kind.clone(), expected: format!("]"), loc: format!("shape array definition")}) 
                 }
                 
-                base = ShapeExpression::Array(Box::new(base));
+                base = ShapeExpression::Array(span.clone(), Box::new(base));
             }
             //Option
             TokenKind::Operator(Operator::Question) => {
                 tokens.next(); // consume '?'
-                base = ShapeExpression::Optional(Box::new(base));
+                base = ShapeExpression::Optional(span.clone(), Box::new(base));
             }
             _ => break,
         }
@@ -524,7 +525,7 @@ fn parse_function(shape: ShapeExpression, is_static: bool, intrinsic_name:Option
         tokens.next(); // Consume arrow
         // Return type
         parse_shape_expression(tokens)?
-    } else { ShapeExpression::Primitive(ValueKind::None) };
+    } else { ShapeExpression::Primitive(span.clone(), ValueKind::None) };
 
     // Statement
     let func = if flags.is_abstract {
@@ -562,7 +563,7 @@ fn parse_function_signature(span:Span, tokens: &mut PeekableTokens) -> Result<Sh
         _ => params.push(parse_shape_expression(tokens)?),
     }
 
-    let mut return_type = ShapeExpression::Primitive(ValueKind::None);
+    let mut return_type = ShapeExpression::Primitive(span.clone(), ValueKind::None);
 
     // Handle arrow
     if matches!(tokens.peek().unwrap().kind, TokenKind::Operator(Operator::Arrow)) {
@@ -577,7 +578,7 @@ fn parse_function_signature(span:Span, tokens: &mut PeekableTokens) -> Result<Sh
     }
 
     let signature = RawFunctionSignature{ input_types: params, output_type: return_type, has_self: false };
-    Ok(ShapeExpression::FunctionSignature(Box::new(signature)))
+    Ok(ShapeExpression::FunctionSignature(span, Box::new(signature)))
 }
 
 fn parse_lambda(span:Span, tokens: &mut PeekableTokens) -> Result<Expression, ParseError> {
@@ -618,7 +619,7 @@ fn parse_lambda(span:Span, tokens: &mut PeekableTokens) -> Result<Expression, Pa
         }
     }
 
-    let mut output_type = ShapeExpression::Primitive(ValueKind::None);
+    let mut output_type = ShapeExpression::Primitive(span.clone(), ValueKind::None);
     let mut func = Some(FunctionBody::Script(Statement::Return { span:span.clone(), value:Expression::Value(span.clone(), Value::None) }));
 
     let captures = Vec::new();
@@ -785,12 +786,37 @@ fn parse_statement(tokens: &mut PeekableTokens) -> Result<Statement, ParseError>
         // Package import
         TokenKind::Keyword(Keyword::Using) => {
             tokens.next(); // consume 'using' keyword
-            let package = match tokens.next().unwrap().kind {
-                TokenKind::String(name) => name.clone(),
-                token => return Err(ParseError::UnexpectedToken { span, token, loc:format!("module import") }),
-            };
 
-            Ok(Statement::Using {span, package: package })
+            let mut namespace_id = NamespaceId::new();
+
+            // First namespace
+            let token = next(tokens, format!("package import"))?;
+            match token.kind {
+                TokenKind::Identifier(name) => {
+                    namespace_id.push(name);
+                }
+                other => return Err(ParseError::IncorrectToken { span:token.span, token:other, expected:format!("namespace"), loc: format!("package import") })
+            }
+
+            // Subspaces
+            while let Some(token) = tokens.peek() {
+                match &token.kind {
+                    TokenKind::Operator(Operator::DColon) => {
+                        tokens.next();
+
+                        let token = next(tokens, format!("package import"))?;
+                        match token.kind {
+                            TokenKind::Identifier(name) => {
+                                namespace_id.push(name);
+                            }
+                            other => return Err(ParseError::IncorrectToken { span:token.span, token:other, expected:format!("namespace"), loc: format!("package import") })
+                        }
+                    }
+                    _ => break,
+                }
+            }
+
+            Ok(Statement::Using {span, package:namespace_id })
         },
 
         // Shape declaration
@@ -819,7 +845,7 @@ fn parse_statement(tokens: &mut PeekableTokens) -> Result<Statement, ParseError>
                             tokens.next();
                             break
                         }
-                        token => return Err(ParseError::UnexpectedToken { span, token:token.clone(), loc:format!("shape generic declaration") }),
+                        other => return Err(ParseError::UnexpectedToken { span:token.span.clone(), token:other.clone(), loc:format!("shape generic declaration") }),
                     }
                 }
             }
@@ -934,6 +960,7 @@ fn parse_statement(tokens: &mut PeekableTokens) -> Result<Statement, ParseError>
 
                     // Slot name
                     let token = tokens.next().unwrap();
+                    let span = token.span.clone();
                     let slot_name = match token.kind {
                         TokenKind::Identifier(k) => k,
                         other => return Err(ParseError::UnexpectedToken { span:token.span, token:other, loc: format!("azimuth declaration") }),
@@ -950,12 +977,12 @@ fn parse_statement(tokens: &mut PeekableTokens) -> Result<Statement, ParseError>
                         let flags = crate::AzimuthFlags { is_static:true, is_abstract, is_const, is_locked };
 
                         // Function
-                        let func = parse_function(ShapeExpression::Shape(shape_identifier.clone()), is_static, intrinsic_name, flags.clone(), tokens)?;
+                        let func = parse_function(ShapeExpression::Shape(span.clone(), shape_identifier.clone()), is_static, intrinsic_name, flags.clone(), tokens)?;
                         
                         // Signature
                         let sig_input_types = func.input_types.iter().map(|i| i.value_type.clone()).collect();
                         let signature = RawFunctionSignature{ has_self:func.has_self, input_types:sig_input_types, output_type:func.output_type.clone() };
-                        let value_type = ShapeExpression::FunctionSignature(Box::new(signature));
+                        let value_type = ShapeExpression::FunctionSignature(span.clone(), Box::new(signature));
                         
                         let func_expr = Expression::Function{ 
                             span:span.clone(), 
@@ -1023,7 +1050,7 @@ fn parse_statement(tokens: &mut PeekableTokens) -> Result<Statement, ParseError>
                 }
                 _ => {
                     // Object without assignment
-                    Ok(Statement::DeclareObject {span, name: object_identifier, shape:ShapeExpression::Primitive(ValueKind::Shape(OBJECT_INSTANCE)) })
+                    Ok(Statement::DeclareObject {span, name: object_identifier, shape:ShapeExpression::Primitive(token.span.clone(), ValueKind::Shape(OBJECT_INSTANCE)) })
                 }
             }
         },

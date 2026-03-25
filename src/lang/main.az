@@ -1,5 +1,5 @@
-using "std"
-using "gametest"
+using std
+using GameTest
 
 print "\n ---- defining shapes ---- \n"
 

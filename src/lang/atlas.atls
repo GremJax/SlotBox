@@ -1,0 +1,6 @@
+chart Test {
+    //std         -> std.az
+    //Main        -> main.az
+    //GameTest    -> gametest.az
+    Simple      -> simple.az
+}

@@ -1,0 +1,8 @@
+shape TestShape {
+    TestValue int32 = 5
+}
+
+let testObject := TestShape
+print testObject.TestValue
+testObject.TestValue = 10
+print testObject

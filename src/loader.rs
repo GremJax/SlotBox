@@ -1,6 +1,6 @@
 use std::{collections::HashMap, fs};
 
-use crate::{lexer::{self, Span}, parser::{self, Identifier, ParseError, ParsedAtlas, Statement}};
+use crate::{AzimuthFlags, FunctionSignature, ValueKind, analyzer::{ResolvedExpression, ResolvedShapeExpression, ShapeInfo}, lexer::{self, Span}, parser::{self, Expression, Identifier, Mapping, ParseError, ParsedAtlas, ShapeExpression, Statement}};
 
 #[derive(Debug, Clone)]
 pub enum LoadError {
@@ -30,34 +30,63 @@ impl std::fmt::Display for LoadError {
 
 pub type Filename = String;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum NamespaceKind {
-    Namespace,
-    Shape,
+    #[default] Namespace,
+    Shape{parents: Vec<Identifier>, mappings: Vec<Mapping>, generics: Vec<ShapeExpression>, has_static: bool},
     Atlas
 }
 
-pub type NamespaceTree = Vec<Identifier>;
+pub type NamespaceId = Vec<Identifier>;
+
+#[derive(Debug, Clone, Default)]
+pub struct Namespace {
+    pub span: Span,
+    pub name: Identifier,
+    pub id: u32,
+    pub kind: NamespaceKind,
+    pub children: HashMap<Identifier, Namespace>,
+    pub azimuths: Vec<LoadedAzimuth>,
+}
 
 #[derive(Debug, Clone)]
-pub struct Namespace {
-    name: Identifier,
-    kind: NamespaceKind,
-    children: HashMap<Identifier, Namespace>,
-    azimuths: Vec<Identifier>,
+pub struct LoadedAzimuth {
+    pub name: Identifier,
+    pub id: u32,
+    pub flags: AzimuthFlags,
+    pub kind: ShapeExpression,
+    pub default_value: Option<Expression>,
 }
 
 impl Namespace {
-    pub fn traverse(&self, tree: &mut NamespaceTree) -> Option<&Namespace> {
+    pub fn traverse(&self, tree: &mut NamespaceId) -> Option<&Namespace> {
+        //println!("My name is {}. Current tree: {:?}", self.name, tree);
+
         let name = match tree.pop() {
             Some(name) => name,
-            None => return None
+            None => return Some(&self)
         };
+        
+        //println!("Found child: {:?} from children: {:?}", self.children.get(&name), self.children);
 
-        if self.name == name { return Some(&self) }
         match self.children.get(&name) {
             Some(child) => child.traverse(tree),
             None => None
+        }
+    }
+
+    pub fn get_azimuth(&self, identifier: &Identifier) -> Option<&LoadedAzimuth> {
+        match self.azimuths.iter().find(|az| &az.name == identifier) {
+            Some(az) => Some(az),
+            None => {
+                for child in self.children.values() {
+                    match child.get_azimuth(identifier) {
+                        Some(az) => return Some(az),
+                        None => {},
+                    }
+                }
+                None
+            }
         }
     }
 }
@@ -77,22 +106,40 @@ pub struct AtlasMapping {
 pub struct Loader {
     pub source_dir: String,
     pub files: HashMap<AtlasLocation, Vec<Statement>>,
+    pub load_order: Vec<(AtlasLocation, Identifier)>,
     pub root: Namespace,
+    pub next_az_id: u32,
+    pub next_ns_id: u32,
 }
 
 impl Loader {
 
     pub fn new(source_dir: &str) -> Self {
         Loader { 
-            source_dir: format!("{}",source_dir),
+            source_dir: source_dir.to_string(),
             files: HashMap::new(), 
             root: Namespace {
+                span: Span::new(0,0, source_dir.to_string()),
                 name: "".to_string(),
+                id: 0,
                 kind: NamespaceKind::Atlas,
                 children: HashMap::new(),
                 azimuths: Vec::new(),
-            }
+            },
+            load_order: Vec::new(),
+            next_az_id: 0,
+            next_ns_id: 0,
         }
+    }
+
+    pub fn next_azimuth_id(&mut self) -> u32 {
+        self.next_az_id += 1;
+        self.next_az_id
+    }
+
+    pub fn next_namespace_id(&mut self) -> u32 {
+        self.next_ns_id += 1;
+        self.next_ns_id
     }
 
     pub fn load_program(&mut self, atlas_path: &str) -> Result<(), LoadError> {
@@ -100,39 +147,67 @@ impl Loader {
         self.root.name = atlas.name;
 
         for mapping in atlas.mappings {
-            let ast = match self.load_file(mapping.to)? {
+            let ast = match self.load_file(Span::new(0,0,atlas_path.to_string()), mapping.to.clone())? {
                 Some(ast) => ast,
                 None => continue,
             };
+            
+            self.files.insert(mapping.to.clone(), ast);
+            let statements = self.files.get(&mapping.to).unwrap().clone();
 
             let name = mapping.from;
-            let namespace = Self::load_namespace(name.clone(), ast)?;
-            self.root.children.insert(name, namespace);
+            let namespace = self.load_namespace(Span::new(0,0, mapping.to.url.clone()), name.clone(), statements)?;
+            self.root.children.insert(name.clone(), namespace);
+            self.load_order.push((mapping.to, name));
         }
 
         Ok(())
     }
 
-    pub fn load_namespace(name:Identifier, statements:&Vec<Statement>) -> Result<Namespace, LoadError> {
+    pub fn load_namespace(&mut self, span:Span, name:Identifier, statements:Vec<Statement>) -> Result<Namespace, LoadError> {
         let mut children = HashMap::new();
         let mut azimuths = Vec::new();
 
         for statement in statements {
             match statement {
-                Statement::DeclareShape { name, slot_ids, .. } => {
-                    let azimuths = slot_ids.iter().map(|raw| raw.name.clone()).collect();
-                    let namespace = Namespace { name:name.clone(), kind:NamespaceKind::Shape, children:HashMap::new(), azimuths };
+                Statement::Using { package, .. } => {
+
+                }
+                Statement::DeclareShape { span, name, slot_ids, parents, mappings, generics, .. } => {
+                    let azimuths: Vec<LoadedAzimuth> = slot_ids.iter()
+                        .map(|raw| LoadedAzimuth{
+                            name:raw.name.clone(), 
+                            id: self.next_azimuth_id(),
+                            kind:raw.value_type.clone(),
+                            default_value: raw.set_value.clone(),
+                            flags: raw.flags.clone(),
+                        }).collect(); 
+                    let has_static = azimuths.iter().any(|az| az.flags.is_static);
+                    let namespace = Namespace { 
+                        span,
+                        name:name.clone(), 
+                        id: self.next_namespace_id(), 
+                        kind:NamespaceKind::Shape{ parents, mappings, generics, has_static }, 
+                        children:HashMap::new(), 
+                        azimuths 
+                    };
                     children.insert(name.clone(), namespace);
                 }
-                Statement::Namespace { name, content, .. } => {
-                    let namespace = Self::load_namespace(name.clone(), content)?;
+                Statement::Namespace { span, name, content, .. } => {
+                    let namespace = self.load_namespace(span, name.clone(), content)?;
                     children.insert(name.clone(), namespace);
                 }
                 Statement::DeclareAzimuth { azimuth, .. } => {
-                    azimuths.push(azimuth.name.clone());
+                    azimuths.push(LoadedAzimuth{
+                        name: azimuth.name.clone(), 
+                        id: self.next_azimuth_id(),
+                        kind: azimuth.value_type.clone(),
+                        default_value: azimuth.set_value.clone(),
+                        flags: azimuth.flags.clone(),
+                    });
                 }
                 Statement::Block ( statements ) => {
-                    let namespace = Self::load_namespace(format!("block"), statements)?;
+                    let namespace = self.load_namespace(span.clone(), format!("block"), statements)?;
                     for (name, child) in namespace.children {
                         children.insert(name, child);
                     }
@@ -143,15 +218,15 @@ impl Loader {
                 _ => {}
             }
         }
-        Ok(Namespace{name, kind:NamespaceKind::Namespace, children, azimuths})
+        Ok(Namespace{span, name, id: self.next_namespace_id(), kind:NamespaceKind::Namespace, children, azimuths})
     }
 
     pub fn load_atlas(&self, atlas_path: &str) -> Result<ParsedAtlas, LoadError> {
         let atlas_source = match fs::read_to_string(format!("{}/{}", self.source_dir, atlas_path)) {
-            Err(_) => return Err(LoadError::FileNotFound{span:Span::new(0,0), location:atlas_path.to_string()}),
+            Err(_) => return Err(LoadError::FileNotFound{span:Span::new(0,0, atlas_path.to_string()), location:atlas_path.to_string()}),
             Ok(source) => source,
         };
-        let atlas_tokens = match lexer::tokenize(&atlas_source, true) {
+        let atlas_tokens = match lexer::tokenize(&atlas_source, atlas_path.to_string(), true) {
             Err(error) => return Err(LoadError::LexerError{location:atlas_path.to_string(), error}),
             Ok(tokens) => tokens,
         };
@@ -162,15 +237,15 @@ impl Loader {
         Ok(atlas)
     }
 
-    pub fn load_file(&mut self, location: AtlasLocation) -> Result<Option<&Vec<Statement>>, LoadError> {
+    pub fn load_file(&self, span: Span, location: AtlasLocation) -> Result<Option<Vec<Statement>>, LoadError> {
         if location.subspace.is_some() { todo!() }
         if self.files.contains_key(&location) { return Ok(None) }
 
         let source = match fs::read_to_string(format!("{}/{}", self.source_dir, location.url)) {
-            Err(_) => return Err(LoadError::FileNotFound{span:Span::new(0,0), location:location.url}),
+            Err(_) => return Err(LoadError::FileNotFound{span, location:location.url}),
             Ok(source) => source,
         };
-        let tokens = match lexer::tokenize(&source, false) {
+        let tokens = match lexer::tokenize(&source, location.url.clone(), false) {
             Err(error) => return Err(LoadError::LexerError{location:location.url, error}),
             Ok(tokens) => tokens,
         };
@@ -178,26 +253,41 @@ impl Loader {
             Err(error) => return Err(LoadError::ParseError{location:location.url, error}),
             Ok(ast) => ast,
         };
-        
-        self.files.insert(location.clone(), ast);
-        Ok(self.files.get(&location))
+
+        Ok(Some(ast))
     }
 
-    pub fn get_azimuths(&self, name:Identifier, using:Vec<NamespaceTree>) -> Vec<NamespaceTree> {
+    pub fn get_azimuths(&self, name:Identifier, using:Vec<NamespaceId>) -> Vec<(NamespaceId, &LoadedAzimuth)> {
         let mut azimuths = Vec::new();
         for (tree, namespace) in self.get_namespaces(using){
-            if namespace.azimuths.contains(&name) {
+            
+            if let Some(found) = namespace.get_azimuth(&name) {
                 let mut found_tree = tree.clone();
                 found_tree.push(name.clone());
-                azimuths.push(found_tree);
+                azimuths.push((found_tree, found));
             }
         }
         azimuths
     }
 
-    pub fn get_namespaces(&self, using:Vec<NamespaceTree>) -> Vec<(NamespaceTree, &Namespace)> {
+    pub fn get_namespaces_matching(&self, identifier: Identifier, using:Vec<NamespaceId>) -> Vec<(NamespaceId, &Namespace)> {
         let mut namespaces = Vec::new();
-        for tree in using {
+        for mut tree in using {
+            tree.push(identifier.clone());
+            //println!("Searching {:?}", tree);
+            tree.reverse();
+            match self.root.traverse(&mut tree.clone()) {
+                Some(namespace) => namespaces.push((tree, namespace)),
+                None => {}
+            }
+        }
+        namespaces
+    }
+
+    pub fn get_namespaces(&self, using:Vec<NamespaceId>) -> Vec<(NamespaceId, &Namespace)> {
+        let mut namespaces = Vec::new();
+        for mut tree in using {
+            tree.reverse();
             match self.root.traverse(&mut tree.clone()) {
                 Some(namespace) => namespaces.push((tree, namespace)),
                 None => {}
@@ -211,5 +301,6 @@ impl Loader {
 pub fn load(source_dir: &str, atlas_path: &str) -> Result<Loader, LoadError> {
     let mut loader = Loader::new(source_dir);
     loader.load_program(atlas_path)?;
+    println!("\nLoaded namespaces: {:?}\n", loader.root);
     Ok(loader)
 }

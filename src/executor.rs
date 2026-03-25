@@ -212,7 +212,7 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
         
         ResolvedExpression::MemberAccess{ span, target, member, optional} => {
             match (evaluate(runtime, *target)?, member) {
-                (Value::Object(object_id, _), Symbol::Azimuth(azimuth)) => {
+                (Value::Object(object_id, _), azimuth) => {
                     match runtime.get_slot_value(object_id, azimuth.id) {
                         Some(value) => Ok(value.clone()),
                         None if optional => Ok(Value::None),
@@ -348,7 +348,7 @@ pub fn evaluate_place(runtime: &mut Runtime, expression:ResolvedExpression) -> R
     match expression {
         ResolvedExpression::MemberAccess{ span, target, member, optional} => {
             match (evaluate(runtime, *target)?, member) {
-                (Value::Object(object_id, kind), Symbol::Azimuth(azimuth)) => {
+                (Value::Object(object_id, kind), azimuth) => {
                     Ok(Value::Pointer(object_id, azimuth.id, kind))
                 }
                 (Value::None, _) if optional => Ok(Value::None),
@@ -415,7 +415,7 @@ pub fn execute(runtime: &mut Runtime, ast: Vec<ResolvedStatement>) -> Result<Exe
             }
         }
     }
-    Ok(ExecFlow::Normal(Span{line:0,column:0}))
+    Ok(ExecFlow::Normal(Span::new(0,0,format!("Runtime"))))
 }
 
 #[derive(Debug, Clone)]
@@ -430,8 +430,8 @@ pub enum ExecFlow {
 
 pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) -> Result<ExecFlow, RuntimeError> {
     match statement {
-        ResolvedStatement::Using { span, ast} => {
-            executor::execute(runtime, ast)?;
+        ResolvedStatement::Using { span, package} => {
+            
             Ok(ExecFlow::Normal(span))
         },
         ResolvedStatement::Expression { span, expr } => { 
@@ -447,19 +447,7 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
             Ok(ExecFlow::Normal(span))
         },
 
-        ResolvedStatement::DeclareShape { span, symbol: Symbol::Shape(info), azimuths } => {
-            runtime.create_shape(info);
-
-            for azimuth in azimuths {
-                if let Symbol::Azimuth(info) = azimuth {
-                    runtime.create_azimuth(info);
-                }
-            }
-
-            Ok(ExecFlow::Normal(span))
-        },
-
-        ResolvedStatement::DeclareLocal { span, symbol: Symbol::Local(info), value } => {
+        ResolvedStatement::DeclareLocal { span, info, value } => {
             let id = info.id.clone();
             let value = evaluate(runtime, value)?;
 
@@ -497,14 +485,14 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
         },
 
         ResolvedStatement::AddMapping { span, object, mapping } => {
-            match (evaluate(runtime, object)?, mapping.from, mapping.to) {
-                (Value::Object(object_id, _), Symbol::Azimuth(from), Symbol::Azimuth(to)) => {
+            match evaluate(runtime, object)? {
+                Value::Object(object_id, _) => {
                         let sealed = runtime.get_object(object_id).flags.sealed;
                         if !sealed {
-                            runtime.remap_slot(object_id, to.id, from.id)
+                            runtime.remap_slot(object_id, mapping.to.id, mapping.from.id)
                         }
                     }
-                (object, from, to) => return Err(RuntimeError::Error{span, message:format!("Invalid mapping: {:?}, {:?} -> {:?}", object, from, to)}),
+                object => return Err(RuntimeError::Error{span, message:format!("Invalid mapping: {:?}, {:?} -> {:?}", object, mapping.from, mapping.to)}),
             }
             Ok(ExecFlow::Normal(span))
         },
@@ -517,12 +505,7 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
                     
                     let mut remap = Vec::new();
                     for mapping in mappings {
-                        match (mapping.from, mapping.to) {
-                            (Symbol::Azimuth(from), Symbol::Azimuth(to)) => {
-                                remap.push(Mapping{from: from.id, to: MappingTo::Single(to.id)});
-                            },
-                            _ => todo!()
-                        }
+                        remap.push(Mapping{from: mapping.from.id, to: MappingTo::Single(mapping.to.id)});
                     }
 
                     runtime.attach_shape_with_remap(object_id, shape_inst, remap);
@@ -643,7 +626,7 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
         }
 
         ResolvedStatement::Block(statements) => {
-            let mut last_span = Span{line: 0, column: 0};
+            let mut last_span = Span::default();
             let mut locals = Vec::new();
 
             for statement in statements{
@@ -675,6 +658,6 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
         //ResolvedStatement::Continue => {}
         //ResolvedStatement::Return(_) => {}
 
-        other => return Err(RuntimeError::Error{span: Span{line:0,column:0}, message:format!("Invalid statement: {:?}", other)})
+        other => return Err(RuntimeError::Error{span:Span::default(), message:format!("Invalid statement: {:?}", other)})
     }
 }

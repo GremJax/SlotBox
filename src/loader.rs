@@ -45,8 +45,9 @@ pub struct Namespace {
     pub name: Identifier,
     pub id: u32,
     pub kind: NamespaceKind,
-    pub children: HashMap<Identifier, Namespace>,
+    pub children: Vec<Namespace>,
     pub azimuths: Vec<LoadedAzimuth>,
+    pub dependencies: Vec<NamespaceId>,
 }
 
 #[derive(Debug, Clone)]
@@ -67,9 +68,9 @@ impl Namespace {
             None => return Some(&self)
         };
         
-        //println!("Found child: {:?} from children: {:?}", self.children.get(&name), self.children);
+        //println!("Found child: {:?} from children: {:?}", self.children.get(&name), self.children.keys());
 
-        match self.children.get(&name) {
+        match self.children.iter().find(|child| child.name == name) {
             Some(child) => child.traverse(tree),
             None => None
         }
@@ -79,7 +80,7 @@ impl Namespace {
         match self.azimuths.iter().find(|az| &az.name == identifier) {
             Some(az) => Some(az),
             None => {
-                for child in self.children.values() {
+                for child in &self.children {
                     match child.get_azimuth(identifier) {
                         Some(az) => return Some(az),
                         None => {},
@@ -106,7 +107,7 @@ pub struct AtlasMapping {
 pub struct Loader {
     pub source_dir: String,
     pub files: HashMap<AtlasLocation, Vec<Statement>>,
-    pub load_order: Vec<(AtlasLocation, Identifier)>,
+    pub load_order: Vec<(AtlasLocation, Identifier, u32)>,
     pub root: Namespace,
     pub next_az_id: u32,
     pub next_ns_id: u32,
@@ -123,8 +124,9 @@ impl Loader {
                 name: "".to_string(),
                 id: 0,
                 kind: NamespaceKind::Atlas,
-                children: HashMap::new(),
+                children: Vec::new(),
                 azimuths: Vec::new(),
+                dependencies: Vec::new(),
             },
             load_order: Vec::new(),
             next_az_id: 0,
@@ -133,13 +135,15 @@ impl Loader {
     }
 
     pub fn next_azimuth_id(&mut self) -> u32 {
+        let id = self.next_az_id;
         self.next_az_id += 1;
-        self.next_az_id
+        id
     }
 
     pub fn next_namespace_id(&mut self) -> u32 {
+        let id = self.next_ns_id;
         self.next_ns_id += 1;
-        self.next_ns_id
+        id
     }
 
     pub fn load_program(&mut self, atlas_path: &str) -> Result<(), LoadError> {
@@ -157,21 +161,23 @@ impl Loader {
 
             let name = mapping.from;
             let namespace = self.load_namespace(Span::new(0,0, mapping.to.url.clone()), name.clone(), statements)?;
-            self.root.children.insert(name.clone(), namespace);
-            self.load_order.push((mapping.to, name));
+            let id = namespace.id;
+            self.root.children.push(namespace);
+            self.load_order.push((mapping.to, name, id));
         }
 
         Ok(())
     }
 
     pub fn load_namespace(&mut self, span:Span, name:Identifier, statements:Vec<Statement>) -> Result<Namespace, LoadError> {
-        let mut children = HashMap::new();
+        let mut children = Vec::new();
         let mut azimuths = Vec::new();
+        let mut dependencies = Vec::new();
 
         for statement in statements {
             match statement {
                 Statement::Using { package, .. } => {
-
+                    dependencies.push(package);
                 }
                 Statement::DeclareShape { span, name, slot_ids, parents, mappings, generics, .. } => {
                     let azimuths: Vec<LoadedAzimuth> = slot_ids.iter()
@@ -188,14 +194,15 @@ impl Loader {
                         name:name.clone(), 
                         id: self.next_namespace_id(), 
                         kind:NamespaceKind::Shape{ parents, mappings, generics, has_static }, 
-                        children:HashMap::new(), 
+                        children:Vec::new(), 
+                        dependencies:Vec::new(),
                         azimuths 
                     };
-                    children.insert(name.clone(), namespace);
+                    children.push(namespace);
                 }
                 Statement::Namespace { span, name, content, .. } => {
                     let namespace = self.load_namespace(span, name.clone(), content)?;
-                    children.insert(name.clone(), namespace);
+                    children.push(namespace);
                 }
                 Statement::DeclareAzimuth { azimuth, .. } => {
                     azimuths.push(LoadedAzimuth{
@@ -208,17 +215,20 @@ impl Loader {
                 }
                 Statement::Block ( statements ) => {
                     let namespace = self.load_namespace(span.clone(), format!("block"), statements)?;
-                    for (name, child) in namespace.children {
-                        children.insert(name, child);
+                    for child in namespace.children {
+                        children.push(child);
                     }
                     for azimuth in namespace.azimuths {
                         azimuths.push(azimuth);
+                    }
+                    for dependency in namespace.dependencies {
+                        dependencies.push(dependency);
                     }
                 }
                 _ => {}
             }
         }
-        Ok(Namespace{span, name, id: self.next_namespace_id(), kind:NamespaceKind::Namespace, children, azimuths})
+        Ok(Namespace{span, name, id: self.next_namespace_id(), kind:NamespaceKind::Namespace, children, azimuths, dependencies})
     }
 
     pub fn load_atlas(&self, atlas_path: &str) -> Result<ParsedAtlas, LoadError> {

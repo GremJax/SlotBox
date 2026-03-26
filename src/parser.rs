@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::analyzer::{CompileError, LocalId};
-use crate::executor::OBJECT_INSTANCE;
+use crate::executor::{OBJECT_INSTANCE, ShapeInstance};
 use crate::intrinsic::IntrinsicOp;
 use crate::lexer::{self, Keyword, Operator, Span, Token, TokenKind, UNARY_OPERATORS};
 use crate::loader::{AtlasLocation, AtlasMapping, NamespaceId};
@@ -64,6 +64,7 @@ pub enum Expression {
     Array(Span, Vec<Expression>, Option<ValueKind>),
     Variable(Span, Identifier),
     Option(Span, Box<Option<Expression>>),
+    Shape(Span, ShapeExpression),
     UnaryOp {
         span: Span,
         operator: Operator,
@@ -87,17 +88,22 @@ pub enum Expression {
         qualifier: Option<ShapeExpression>,
         member: Identifier,
         optional: bool,
+        chained: bool,
     },
     ArrayAccess {
         span: Span,
         target: Box<Expression>,
         index: Box<Expression>,
+        optional: bool,
+        chained: bool,
     },
     FunctionCall {
         span: Span,
         caller: Box<Expression>,
         target: Box<Expression>,
         args: Vec<Expression>,
+        optional: bool,
+        chained: bool,
     },
     Function {
         span: Span,
@@ -106,7 +112,7 @@ pub enum Expression {
         output_type: ShapeExpression,
         func: Box<Option<FunctionBody>>,
         captures: Vec<Identifier>,
-    }
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -315,6 +321,7 @@ fn parse_expression(tokens: &mut PeekableTokens) -> Result<Expression, ParseErro
     let mut qualifier = None;
 
     // Check for member access / function call / array index
+    let mut chained = false;
     while let Some(token) = tokens.peek() {
         let span = token.span.clone();
 
@@ -325,12 +332,14 @@ fn parse_expression(tokens: &mut PeekableTokens) -> Result<Expression, ParseErro
             }
             TokenKind::Operator(Operator::Dot) | TokenKind::Operator(Operator::QDot) => {
                 let optional = matches!(token.kind, TokenKind::Operator(Operator::QDot));
+                if optional { chained = true }
+
                 tokens.next(); // Consume dot
 
                 if let TokenKind::Identifier(k) = tokens.next().unwrap().kind {
                     // Access Member
                     caller = expr.clone();
-                    expr = Expression::MemberAccess{span, target: Box::new(expr), qualifier:qualifier.clone(), member: k, optional };
+                    expr = Expression::MemberAccess{span, target: Box::new(expr), qualifier:qualifier.clone(), member: k, optional, chained };
                     qualifier = None;
                 }
             }
@@ -355,14 +364,14 @@ fn parse_expression(tokens: &mut PeekableTokens) -> Result<Expression, ParseErro
                     }
                 }
 
-                expr = Expression::FunctionCall{span, caller:Box::new(caller.clone()), target:Box::new(expr), args};
+                expr = Expression::FunctionCall{span, caller:Box::new(caller.clone()), target:Box::new(expr), args, optional:false, chained};
             }
             
             TokenKind::LeftBracket => {
                 tokens.next(); // Consume bracket
                 let index = parse_expression(tokens)?;
                 tokens.next(); // Consume bracket
-                expr = Expression::ArrayAccess{span, target:Box::new(expr), index:Box::new(index)};
+                expr = Expression::ArrayAccess{span, target:Box::new(expr), index:Box::new(index), optional:false, chained};
             }
 
             _ => break,
@@ -380,7 +389,7 @@ fn parse_expression(tokens: &mut PeekableTokens) -> Result<Expression, ParseErro
                     left: Box::new(expr),
                     operator: op,
                     right: Box::new(parse_expression(tokens)?),
-                });
+                })
             }
         }
     }
@@ -777,6 +786,113 @@ fn parse_object_statement(span:Span, tokens: &mut PeekableTokens) -> Result<Stat
     }
 }
 
+fn parse_azimuth(shape_identifier: Identifier, tokens: &mut PeekableTokens) -> Result<(RawAzimuth, Span), ParseError> {
+    // Intrinsic
+    let is_intrinsic = match tokens.peek().unwrap().kind {
+        TokenKind::Keyword(Keyword::Intrinsic) => {
+            tokens.next();
+            true
+        }
+        _ => false
+    };
+
+    // Static
+    let is_static = match tokens.peek().unwrap().kind {
+        TokenKind::Keyword(Keyword::Static) => {
+            tokens.next();
+            true
+        }
+        _ => false
+    };
+
+    // Locked
+    let is_locked = match tokens.peek().unwrap().kind {
+        TokenKind::Keyword(Keyword::Locked) => {
+            tokens.next();
+            true
+        }
+        _ => false
+    };
+
+    // Const
+    let is_const = match tokens.peek().unwrap().kind {
+        TokenKind::Keyword(Keyword::Const) => {
+            tokens.next();
+            true
+        }
+        _ => false
+    };
+
+    // Abstract
+    let is_abstract = match tokens.peek().unwrap().kind {
+        TokenKind::Keyword(Keyword::Abstract) => {
+            tokens.next();
+            true
+        }
+        _ => false
+    };
+
+    // Slot name
+    let token = tokens.next().unwrap();
+    let span = token.span.clone();
+    let slot_name = match token.kind {
+        TokenKind::Identifier(k) => k,
+        other => return Err(ParseError::UnexpectedToken { span:token.span, token:other, loc: format!("azimuth declaration") }),
+    };
+
+    // Intrinsic name
+    let intrinsic_name = if is_intrinsic {
+        Some(format!("{}::{}", shape_identifier, slot_name.clone()))
+    } else { None };
+
+    // Function check
+    if matches!(tokens.peek().unwrap().kind, TokenKind::LeftParen) {
+        
+        let flags = crate::AzimuthFlags { is_static:true, is_abstract, is_const, is_locked };
+
+        // Function
+        let func = parse_function(ShapeExpression::Shape(span.clone(), shape_identifier.clone()), is_static, intrinsic_name, flags.clone(), tokens)?;
+        
+        // Signature
+        let sig_input_types = func.input_types.iter().map(|i| i.value_type.clone()).collect();
+        let signature = RawFunctionSignature{ has_self:func.has_self, input_types:sig_input_types, output_type:func.output_type.clone() };
+        let value_type = ShapeExpression::FunctionSignature(span.clone(), Box::new(signature));
+        
+        let func_expr = Expression::Function{ 
+            span:span.clone(), 
+            has_self:func.has_self,
+            input_types: func.input_types, 
+            output_type: func.output_type, 
+            func:Box::new(func.func),
+            captures:Vec::new(),
+        };
+
+        return Ok((RawAzimuth { 
+            name: slot_name, 
+            value_type,
+            flags, 
+            set_value: Some(func_expr), 
+        }, span.clone()));
+    }
+    
+    // Flags
+    let flags = crate::AzimuthFlags { is_static, is_abstract, is_const, is_locked };
+
+    // Type
+    let value_type = parse_shape_expression(tokens)?;
+
+    // Default
+    let set_value = match tokens.peek().unwrap().kind {
+        TokenKind::Operator(Operator::Assign) => {
+            tokens.next();
+            Some(parse_expression(tokens)?)
+        }
+        _ => None
+    };
+
+    Ok((RawAzimuth { name: slot_name, value_type, flags, set_value }, span.clone()))
+}
+
 fn parse_statement(tokens: &mut PeekableTokens) -> Result<Statement, ParseError> {
     let token = tokens.peek().unwrap();
     let span = token.span.clone();
@@ -913,111 +1029,8 @@ fn parse_statement(tokens: &mut PeekableTokens) -> Result<Statement, ParseError>
                         break;
                     }
 
-                    // Intrinsic
-                    let is_intrinsic = match tokens.peek().unwrap().kind {
-                        TokenKind::Keyword(Keyword::Intrinsic) => {
-                            tokens.next();
-                            true
-                        }
-                        _ => false
-                    };
-
-                    // Static
-                    let is_static = match tokens.peek().unwrap().kind {
-                        TokenKind::Keyword(Keyword::Static) => {
-                            tokens.next();
-                            true
-                        }
-                        _ => false
-                    };
-
-                    // Locked
-                    let is_locked = match tokens.peek().unwrap().kind {
-                        TokenKind::Keyword(Keyword::Locked) => {
-                            tokens.next();
-                            true
-                        }
-                        _ => false
-                    };
-
-                    // Const
-                    let is_const = match tokens.peek().unwrap().kind {
-                        TokenKind::Keyword(Keyword::Const) => {
-                            tokens.next();
-                            true
-                        }
-                        _ => false
-                    };
-
-                    // Abstract
-                    let is_abstract = match tokens.peek().unwrap().kind {
-                        TokenKind::Keyword(Keyword::Abstract) => {
-                            tokens.next();
-                            true
-                        }
-                        _ => false
-                    };
-
-                    // Slot name
-                    let token = tokens.next().unwrap();
-                    let span = token.span.clone();
-                    let slot_name = match token.kind {
-                        TokenKind::Identifier(k) => k,
-                        other => return Err(ParseError::UnexpectedToken { span:token.span, token:other, loc: format!("azimuth declaration") }),
-                    };
-
-                    // Intrinsic name
-                    let intrinsic_name = if is_intrinsic {
-                        Some(format!("{}::{}", shape_identifier, slot_name.clone()))
-                    } else { None };
-
-                    // Function check
-                    if matches!(tokens.peek().unwrap().kind, TokenKind::LeftParen) {
-                        
-                        let flags = crate::AzimuthFlags { is_static:true, is_abstract, is_const, is_locked };
-
-                        // Function
-                        let func = parse_function(ShapeExpression::Shape(span.clone(), shape_identifier.clone()), is_static, intrinsic_name, flags.clone(), tokens)?;
-                        
-                        // Signature
-                        let sig_input_types = func.input_types.iter().map(|i| i.value_type.clone()).collect();
-                        let signature = RawFunctionSignature{ has_self:func.has_self, input_types:sig_input_types, output_type:func.output_type.clone() };
-                        let value_type = ShapeExpression::FunctionSignature(span.clone(), Box::new(signature));
-                        
-                        let func_expr = Expression::Function{ 
-                            span:span.clone(), 
-                            has_self:func.has_self,
-                            input_types: func.input_types, 
-                            output_type: func.output_type, 
-                            func:Box::new(func.func),
-                            captures:Vec::new(),
-                        };
-
-                        slot_ids.push(RawAzimuth { 
-                            name: slot_name, 
-                            value_type,
-                            flags, 
-                            set_value: Some(func_expr), 
-                        });
-                        continue;
-                    }
-                    
-                    // Flags
-                    let flags = crate::AzimuthFlags { is_static, is_abstract, is_const, is_locked };
-
-                    // Type
-                    let value_type = parse_shape_expression(tokens)?;
-
-                    // Default
-                    let set_value = match tokens.peek().unwrap().kind {
-                        TokenKind::Operator(Operator::Assign) => {
-                            tokens.next();
-                            Some(parse_expression(tokens)?)
-                        }
-                        _ => None
-                    };
-
-                    slot_ids.push(RawAzimuth { name: slot_name, value_type, flags, set_value });
+                    let (azimuth, _) = parse_azimuth(shape_identifier.clone(), tokens)?;
+                    slot_ids.push(azimuth);
                 }
             } else {
                 return Err(ParseError::IncorrectToken{span, token:token.kind, expected:format!("{{"), loc:format!("shape declaration")});
@@ -1025,6 +1038,12 @@ fn parse_statement(tokens: &mut PeekableTokens) -> Result<Statement, ParseError>
 
             Ok(Statement::DeclareShape { span, name: shape_identifier, slot_ids, parents, mappings, generics })
         },
+
+        // Azimuth declaration within namespace
+        TokenKind::Keyword(Keyword::Static) => {
+            let (azimuth, span) = parse_azimuth(format!(""), tokens)?;
+            Ok(Statement::DeclareAzimuth{ span, azimuth })
+        }
 
         // Object declaration
         TokenKind::Keyword(Keyword::Let) => {

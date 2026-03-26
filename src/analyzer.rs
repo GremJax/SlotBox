@@ -329,6 +329,7 @@ pub enum ResolvedExpression {
     StringFormat(Span, Vec<ResolvedExpression>),
     Variable(Span, Symbol),
     Option(Span, Box<Option<ResolvedExpression>>),
+    Shape(Span, ResolvedShapeExpression),
     UnaryOp {
         span: Span,
         operator: Operator,
@@ -351,16 +352,21 @@ pub enum ResolvedExpression {
         target: Box<ResolvedExpression>,
         member: AzimuthInfo,
         optional: bool,
+        chained: bool,
     },
     ArrayAccess  {
         span: Span,
         target: Box<ResolvedExpression>,
         index: Box<ResolvedExpression>,
+        optional: bool,
+        chained: bool,
     },
     FunctionCall  {
         span: Span,
         target: Box<ResolvedExpression>,
         args: Vec<ResolvedExpression>,
+        optional: bool,
+        chained: bool,
     },
     Function {
         span: Span,
@@ -404,8 +410,9 @@ impl ResolvedExpression {
                 Some(expr) => expr.kind(),
                 None => ValueKind::None,
             }
-            ResolvedExpression::UnaryOp { operator, .. } => operator.kind(),
-            ResolvedExpression::BinaryOp { operator, .. } => operator.kind(),
+            ResolvedExpression::Shape(_, value) => value.kind(),
+            ResolvedExpression::UnaryOp { operator, operand, .. } => operator.kind(operand.kind()),
+            ResolvedExpression::BinaryOp { operator, left, .. } => operator.kind(left.kind()),
             ResolvedExpression::Ternary { true_expr, .. } => true_expr.kind(),
             ResolvedExpression::MemberAccess { member, .. } => member.value_type.clone(),
             ResolvedExpression::ArrayAccess { target, .. } => match target.kind() {
@@ -421,6 +428,24 @@ impl ResolvedExpression {
                 let resolved_in = input_types.iter().map(|i| i.shape.kind()).collect();
                 ValueKind::Function(Box::new(FunctionSignature{ input_types:resolved_in, output_type:resolved_out, has_self:*has_self }))
             }
+        }
+    }
+
+    pub fn span(&self) -> &Span {
+        match self {
+            ResolvedExpression::Value(span, _) => span,
+            ResolvedExpression::Array(span, _, _) => span,
+            ResolvedExpression::StringFormat(span, _) => span,
+            ResolvedExpression::Variable(span, _) => span,
+            ResolvedExpression::Option(span, _) => span,
+            ResolvedExpression::Shape(span, _) => span,
+            ResolvedExpression::UnaryOp { span, .. } => span,
+            ResolvedExpression::BinaryOp { span, .. } => span,
+            ResolvedExpression::Ternary { span, .. } => span,
+            ResolvedExpression::MemberAccess { span, .. } => span,
+            ResolvedExpression::ArrayAccess { span, .. } => span,
+            ResolvedExpression::FunctionCall { span, .. } => span,
+            ResolvedExpression::Function { span, .. } => span,
         }
     }
 }
@@ -443,42 +468,41 @@ pub fn compile_time_error(span: Span, message:String) {
     panic!("[{:?}:{:?}]: {}", span.line, span.column, message);
 }
 
-struct Analyzer{
-    scopes: Vec<Scope>,
-    loader: Loader,
-    file_scopes: HashMap<Identifier, ScopeId>,
+pub struct Analyzer{
+    pub scopes: Vec<Scope>,
+    pub loader: Loader,
+    pub namespace_scopes: HashMap<u32, ScopeId>,
+    pub namespace_static_info: HashMap<u32, ObjectInfo>,
 
-    azimuths: HashMap<u32, AzimuthInfo>,
-    shapes: HashMap<u32, ShapeInfo>,
+    pub azimuths: HashMap<u32, AzimuthInfo>,
+    pub shapes: HashMap<u32, ShapeInfo>,
 
-    next_scope_id: u32,
-    next_object_id: u32,
+    pub next_scope_id: u32,
+    pub next_object_id: u32,
 }
 
 impl Analyzer {
     pub fn new(loader:Loader) -> Self {
-        let global = Scope{id: 0, parent: None, symbols: HashMap::new(), locals:0, generics:0, using:Vec::new()};
+        let global = Scope{
+            id: 0, 
+            parent: None, 
+            symbols: HashMap::new(), 
+            locals:0, 
+            generics:0, 
+            using: Vec::new(),
+        };
         let mut analyzer = Analyzer{
             scopes: Vec::new(), 
             loader,
             next_scope_id: 1,
             next_object_id: 1,
-            file_scopes: HashMap::new(),
+            namespace_scopes: HashMap::new(),
+            namespace_static_info: HashMap::new(),
             azimuths: HashMap::new(),
             shapes: HashMap::new(),
         };
         analyzer.scopes.push(global);
         analyzer
-    }
-
-    pub fn get_file_scope_id(&self, namespace_id: &NamespaceId) -> ScopeId {
-        for namespace in namespace_id {
-            match self.file_scopes.get(namespace) {
-                Some(id) => return *id,
-                None => continue,
-            }
-        }
-        0
     }
 
     pub fn get_scope(&self, id:ScopeId) -> &Scope {
@@ -509,14 +533,15 @@ impl Analyzer {
 
     pub fn get_using(&self, id:ScopeId) -> Vec<NamespaceId> {
         let scope = self.get_scope(id);
+
+        let mut using = scope.using.clone();
         match scope.parent {
             Some(parent) => {
-                let mut using = self.get_using(parent);
-                using.append(&mut scope.using.clone());
-                using
+                using.append(&mut self.get_using(parent));
             }
-            _ => Vec::new()
+            _ => {}
         }
+        using
     }
 
     pub fn get_symbol(&self, id:ScopeId, identifier:Identifier) -> Option<&Symbol> {
@@ -549,6 +574,8 @@ impl Analyzer {
     }
 
     pub fn get_shape(&self, id:ScopeId, identifier:Identifier) -> Option<&ShapeInfo> {
+        println!("Getting {}: {:?}, using:{:?}", identifier, self.get_scope(id), self.get_using(id));
+
         let using = self.get_using(id);
         let namespaces = self.loader.get_namespaces_matching(identifier, using.clone());
 
@@ -580,139 +607,6 @@ impl Analyzer {
         //self.loader.get_azimuths(name, using)
         todo!()
     }
-    /*
-    fn declare_shape(&mut self, span: Span, scope_id: ScopeId, name: Identifier, slot_ids: Vec<RawAzimuth>, parents: Vec<Identifier>, mappings: Vec<Mapping>, generics: Vec<ShapeExpression>) 
-    -> Result<(&ShapeInfo, Vec<&AzimuthInfo>), CompileError> {
-        let id = self.next_shape_id.clone();
-        self.next_shape_id += 1;
-
-        let new_scope = self.create_scope(scope_id);
-        
-        // Shape symbol header
-        let info = ShapeInfo{
-            id: id,
-            name: name.clone(),
-            static_id: None,     //static_info,
-            azimuths: Vec::new(), //az_symbols,
-            generics: Vec::new(),//resolved_generics,
-            parent_ids: Vec::new(), //az_symbols,
-            mappings: Vec::new(),//resolved_generics,
-        };
-
-        // Azimuths
-        let mut az_info = Vec::new();
-        let mut az_ids = Vec::new();
-        let mut az_id = self.next_azimuth_id.clone();
-        let mut has_static = false;
-
-        for azimuth in &slot_ids {
-            // Azimuth headers
-            let info = AzimuthInfo {
-                id: az_id,
-                name: azimuth.name.clone(),
-                shape_id: id,
-                default_value: None,//Box::new(default_value),
-                flags: azimuth.flags.clone(),
-                value_type: ValueKind::None,//self.resolve_shape_expression(azimuth.value_type, scope)?.kind(),
-            };
-            if azimuth.flags.is_static { has_static = true; }
-            az_ids.push(az_id);
-            az_info.push(info);
-            az_id += 1;
-        }
-        self.next_azimuth_id = az_id;
-        
-        {
-            // Insert into parent scope
-            let scope = self.get_scope_mut(scope_id);
-
-            // Insert azimuth headers
-            for info in &az_info {
-                scope.symbols.insert(info.name.clone(), Symbol::Azimuth(info.clone()));
-            }
-
-            // Insert shape header
-            scope.symbols.insert(name.clone(), Symbol::Shape(info.clone()));
-        }
-
-        // Generics
-        let mut resolved_generics = Vec::new();
-        for generic in generics {
-            self.declare_generic(&generic, new_scope);
-            let resolved_generic = self.resolve_shape_expression(generic, new_scope)?;
-            resolved_generics.push(resolved_generic);
-        }
-
-        // Inheritance
-        let mut parent_ids = Vec::new();
-        for parent in parents {
-            match self.get_shape(new_scope, parent.clone()) {
-                Some(info) => parent_ids.push(info.id),
-                _ => return Err(CompileError::UndefinedSymbol { span, name:parent })
-            }
-        }
-
-        let mut resolved_mappings = Vec::new();
-        for mapping in mappings {
-            resolved_mappings.push(self.resolve_mapping(span.clone(), mapping, new_scope)?);
-        }
-
-        // Static singleton
-        let static_info = if has_static {
-            Some(Symbol::Object(self.declare_object(
-                new_scope, 
-                format!("{}::Static", name), 
-                ResolvedShapeExpression::Primitive(ValueKind::Shape(OBJECT_INSTANCE))
-            ).0))
-        } else { None };
-
-        // Propegate Shape
-        {
-            let scope = self.get_scope_mut(scope_id);
-            match scope.symbols.get_mut(&name).unwrap() {
-                Symbol::Shape(info) => {
-                    info.azimuths = az_ids;
-                    info.generics = resolved_generics;
-                    info.static_id = Box::new(static_info);
-                    info.parent_ids = parent_ids;
-                    info.mappings = resolved_mappings;
-                }
-                _ => todo!(),
-            }
-        }
-
-        // Propegate Azimuths
-        let mut names = Vec::new();
-        for azimuth in slot_ids {
-            names.push(azimuth.name.clone());
-
-            let default_value = match azimuth.set_value {
-                Some(expr) => Some(Box::new(self.resolve_expression(expr, new_scope)?)),
-                _ => None,
-            };
-
-            let value_type = self.resolve_shape_expression(azimuth.value_type, new_scope)?;
-
-            let scope = self.get_scope_mut(scope_id);
-            let symbol = scope.symbols.get_mut(&azimuth.name).unwrap();
-            match symbol {
-                Symbol::Azimuth(azimuth_info) => {
-                    azimuth_info.value_type = value_type.kind();
-                    azimuth_info.default_value = default_value;
-                }
-                _ => todo!(),
-            }
-            self.azimuths.insert()
-        }
-        
-        // Retrieve propegated symbols
-        let mut propegated_az = Vec::new();
-        for name in names {
-            propegated_az.push(self.get_azimuth(new_scope, name).unwrap())
-        }
-
-        Ok((self.get_shape(new_scope, name).unwrap(), propegated_az))
-    }*/
 
     fn declare_generic(&mut self, shape: &ShapeExpression, scope: ScopeId) {
         let identifier = match shape {
@@ -752,7 +646,7 @@ impl Analyzer {
         let symbol = Symbol::Local(LocalInfo{id: id, name: name.clone(), known_shapes});
 
         scope.symbols.insert(name.clone(), symbol);
-        id + 1
+        id
     }
 
     pub fn resolve_expression(&mut self, expression:Expression, scope:ScopeId) -> Result<ResolvedExpression, CompileError> {
@@ -785,18 +679,40 @@ impl Analyzer {
             }
 
             Expression::Option(span, option) => todo!(),
+
+            Expression::Shape(span, shape) => Ok(ResolvedExpression::Shape(span, self.resolve_shape_expression(shape, scope)?)),
             
             Expression::Variable(span, k) => {
                 match self.get_symbol(scope, k.clone()) {
                     Some(Symbol::Object(info)) => Ok(ResolvedExpression::Variable(span, Symbol::Object(info.clone()))),
                     Some(Symbol::Local(info)) => Ok(ResolvedExpression::Variable(span, Symbol::Local(info.clone()))),
                     _ => {
+                        println!("Not object or local, must be shape");
                         match self.get_shape(scope, k.clone()) {
                             Some(info) => { match &info.static_id {
                                 Some(info) => Ok(ResolvedExpression::Variable(span, Symbol::Object(*info.clone()))),
                                 None => Err(CompileError::Error { span, message: format!("Shape {} does not have static instance", k) })
                             }}
-                            _ => Err(CompileError::UndefinedSymbol { span, name: k })
+                            _ => {
+                                println!("Not object, local, or shape, must be namespace azimuth");
+                                match self.get_azimuth(scope, k.clone()) {
+                                    Some(info) => { 
+
+                                        let static_info = match self.namespace_static_info.get(&info.shape_id) {
+                                            Some(info) => info,
+                                            None => return Err(CompileError::UndefinedSymbol { span, name: k })
+                                        };
+
+                                        Ok(ResolvedExpression::MemberAccess{
+                                            span:span.clone(), 
+                                            target: Box::new(ResolvedExpression::Variable(span, Symbol::Object(static_info.clone()))), 
+                                            member:info.clone(), 
+                                            optional:false, chained:false
+                                        })
+                                    }
+                                    _ => Err(CompileError::UndefinedSymbol { span, name: k })
+                                }
+                            }
                         }
                     }
                 }
@@ -911,7 +827,7 @@ impl Analyzer {
                 Ok(ResolvedExpression::Ternary{span, condition:Box::new(condition), true_expr:Box::new(true_expr), else_expr:Box::new(else_expr)})
             }
 
-            Expression::MemberAccess{ span, target, qualifier, member, optional} => {
+            Expression::MemberAccess{ span, target, qualifier, member, optional, chained} => {
                 let target = self.resolve_expression(*target, scope)?;
                 let qualifier = match qualifier {
                     Some(shape_expr) => Some(self.resolve_shape_expression(shape_expr, scope)?),
@@ -923,7 +839,7 @@ impl Analyzer {
                     Ok(ResolvedExpression::MemberAccess{span, 
                         target:Box::new(target),
                         member:member.clone(),
-                        optional
+                        optional, chained
                     })
 
                 } else {
@@ -931,7 +847,7 @@ impl Analyzer {
                 }
             }
 
-            Expression::ArrayAccess{ span, target, index} => {
+            Expression::ArrayAccess{ span, target, index, optional, chained} => {
                 let target = self.resolve_expression(*target, scope)?;
                 let index = self.resolve_expression(*index, scope)?;
 
@@ -939,10 +855,10 @@ impl Analyzer {
                     return Err(CompileError::TypeMismatch { span, expected: ValueKind::Int32, found: index.kind(), loc:format!("array index") });
                 }
 
-                Ok(ResolvedExpression::ArrayAccess{span, target:Box::new(target), index:Box::new(index)})
+                Ok(ResolvedExpression::ArrayAccess{span, target:Box::new(target), index:Box::new(index), optional, chained})
             }
 
-            Expression::FunctionCall { span, caller, target, args } => {
+            Expression::FunctionCall { span, caller, target, args, optional, chained } => {
                 let target = self.resolve_expression(*target, scope)?;
                 let caller = self.resolve_expression(*caller, scope)?;
 
@@ -978,7 +894,7 @@ impl Analyzer {
                     return Err(CompileError::Error { span, message:format!("Too few args: {}, needed: {}", args.len(), func.input_types.len()) })
                 }
 
-                Ok(ResolvedExpression::FunctionCall{span, target:Box::new(target), args:resolved_args})
+                Ok(ResolvedExpression::FunctionCall{span, target:Box::new(target), args:resolved_args, optional, chained})
             },
 
             Expression::Function {span, has_self, input_types, output_type, func, captures } => {
@@ -1096,22 +1012,16 @@ impl Analyzer {
                 self.get_scope_mut(scope).using.push(package.clone());
                 Ok(ResolvedStatement::Using{ span, package })
             }
-            Statement::Namespace{ span, name, content } => todo!(),
-            Statement::DeclareAzimuth{ span, azimuth } => todo!(),
+            Statement::Namespace{ span, name, content } => {
+                Ok(ResolvedStatement::Block(Vec::new()))
+            },
+            Statement::DeclareAzimuth{ span, azimuth } => {
+                Ok(ResolvedStatement::Block(Vec::new()))
+            },
             Statement::DeclareShape { span, name, slot_ids, parents, mappings, generics } => {
-                //let my_scope = self.get_scope_mut(scope);
-                //if my_scope.symbols.contains_key(&name) { return Err(CompileError::DuplicateSymbol{span, name}); }
-    
-                //let (info, az_symbols) = self.declare_shape(span.clone(), scope, name, slot_ids, parents, mappings, generics)?;
-
-                //let mut azimuths = Vec::new();
-                //for azimuth in az_symbols {
-                //    azimuths.push(azimuth.clone());
-                //}
-
-                //Ok(ResolvedStatement::DeclareShape{ span, info: info.clone(), azimuths})
                 Ok(ResolvedStatement::Block(Vec::new()))
             }
+
             Statement::DeclareObject { span, name, shape } => {
                 let my_scope = self.get_scope_mut(scope);
                 if my_scope.symbols.contains_key(&name) { return Err(CompileError::DuplicateSymbol{span, name}); }
@@ -1322,17 +1232,34 @@ impl Analyzer {
     }
 
     fn resolve_namespace_headers(&mut self, namespace: &Namespace, scope: ScopeId) -> Result<(), CompileError> {
+        let scope_id = self.create_scope(scope);
+        self.namespace_scopes.insert(namespace.id, scope_id);
+        
+        let scope_mut = self.get_scope_mut(scope_id);
+        scope_mut.using.push([namespace.name.clone()].to_vec());
+
+        for dependency in &namespace.dependencies { 
+            scope_mut.using.push(dependency.clone());
+        }
+
         for azimuth in &namespace.azimuths {
             self.azimuths.insert(azimuth.id, AzimuthInfo { 
                 id: azimuth.id, 
                 name: azimuth.name.clone(), 
                 flags: azimuth.flags.clone(), 
-                shape_id: 0, 
+                shape_id: namespace.id, 
                 default_value: None, 
                 value_type: ValueKind::None, 
             });
         }
         match namespace.kind {
+            NamespaceKind::Atlas => {
+                // Using all children
+                //let scope = self.get_scope_mut(scope);
+                //for child in &namespace.children {
+                //    //scope.using.push([child.name.clone()].to_vec());
+                //}
+            }
             NamespaceKind::Shape{ .. } => {
                 self.shapes.insert(namespace.id, ShapeInfo { 
                     id: namespace.id,
@@ -1346,46 +1273,33 @@ impl Analyzer {
             }
             _ => {}
         }
-        for child in namespace.children.values() {
-            self.resolve_namespace_headers(child, scope)?;
-        }
-        Ok(())
-    }
-
-    fn resolve_namespace_kinds(&mut self, namespace: &Namespace, scope: ScopeId) -> Result<(), CompileError> {
-        let span = namespace.span.clone();
-        for azimuth in &namespace.azimuths {
-            let resolved = self.resolve_shape_expression(azimuth.kind.clone(), scope)?;
-            match self.azimuths.get_mut(&azimuth.id) {
-                None => return Err(CompileError::Error{span, message: format!("Dead azimuth: {}", namespace.id)}),
-                Some(info) => {
-                    info.value_type = resolved.kind();
-                }
-            }
-        }
-        for child in namespace.children.values() {
-            self.resolve_namespace_kinds(child, scope)?;
+        for child in &namespace.children {
+            self.resolve_namespace_headers(child, scope_id)?;
         }
         Ok(())
     }
 
     fn resolve_namespace_shapes(&mut self, namespace: &Namespace, scope: ScopeId) -> Result<(), CompileError> {
         let span = namespace.span.clone();
+
+        
+
         match &namespace.kind {
             NamespaceKind::Shape{ generics, mappings, parents, has_static } => {
-                
+                let shape_scope = *self.namespace_scopes.get(&namespace.id).unwrap_or(&scope);
+
                 // Generics
                 let mut resolved_generics = Vec::new();
                 for generic in generics {
-                    self.declare_generic(generic, scope);
-                    let resolved_generic = self.resolve_shape_expression(generic.clone(), scope)?;
+                    self.declare_generic(generic, shape_scope);
+                    let resolved_generic = self.resolve_shape_expression(generic.clone(), shape_scope)?;
                     resolved_generics.push(resolved_generic);
                 }
 
                 // Inheritance
                 let mut parent_ids = Vec::new();
                 for parent in parents {
-                    match self.get_shape(scope, parent.clone()) {
+                    match self.get_shape(shape_scope, parent.clone()) {
                         Some(info) => parent_ids.push(info.id),
                         _ => return Err(CompileError::UndefinedSymbol { span, name:parent.clone() })
                     }
@@ -1394,16 +1308,18 @@ impl Analyzer {
                 // Mappings
                 let mut resolved_mappings = Vec::new();
                 for mapping in mappings {
-                    resolved_mappings.push(self.resolve_mapping(span.clone(), mapping.clone(), scope)?);
+                    resolved_mappings.push(self.resolve_mapping(span.clone(), mapping.clone(), shape_scope)?);
                 }
 
                 // Static singleton
                 let static_info = if *has_static {
-                    Some(Box::new(self.declare_object(
+                    let info = self.declare_object(
                         scope, 
                         format!("{}::Static", namespace.name), 
                         ResolvedShapeExpression::Primitive(span.clone(), ValueKind::Shape(OBJECT_INSTANCE))
-                    ).0))
+                    ).0;
+                    self.namespace_static_info.insert(namespace.id, info.clone());
+                    Some(Box::new(info))
                 } else { None };
 
                 // Set info
@@ -1419,27 +1335,50 @@ impl Analyzer {
             }
             _ => {}
         }
-        for child in namespace.children.values() {
+        let scope = *self.namespace_scopes.get(&namespace.id).unwrap_or(&scope);
+        for child in &namespace.children {
             self.resolve_namespace_shapes(child, scope)?;
         }
         Ok(())
     }
 
+    fn resolve_namespace_kinds(&mut self, namespace: &Namespace, scope: ScopeId) -> Result<(), CompileError> {
+        let span = namespace.span.clone();
+
+        let scope = *self.namespace_scopes.get(&namespace.id).unwrap_or(&scope);
+
+        for azimuth in &namespace.azimuths {
+            let resolved = self.resolve_shape_expression(azimuth.kind.clone(), scope)?;
+            match self.azimuths.get_mut(&azimuth.id) {
+                None => return Err(CompileError::Error{span, message: format!("Dead azimuth: {}", namespace.id)}),
+                Some(info) => {
+                    info.value_type = resolved.kind();
+                }
+            }
+        }
+        for child in &namespace.children {
+            self.resolve_namespace_kinds(child, scope)?;
+        }
+        Ok(())
+    }
+
     fn resolve_namespace_defaults(&mut self, namespace: &Namespace, scope: ScopeId) -> Result<(), CompileError> {
+        let scope = *self.namespace_scopes.get(&namespace.id).unwrap_or(&scope);
+
         for azimuth in &namespace.azimuths {
             let resolved = match &azimuth.default_value {
                 None => continue,
                 Some(value) => self.resolve_expression(value.clone(), scope)?
             };
 
-            match self.azimuths.get_mut(&namespace.id) {
+            match self.azimuths.get_mut(&azimuth.id) {
                 None => return Err(CompileError::Error{span:namespace.span.clone(), message: format!("Dead azimuth: {}", namespace.id)}),
                 Some(info) => {
                     info.default_value = Some(Box::new(resolved));
                 }
             }
         }
-        for child in namespace.children.values() {
+        for child in &namespace.children {
             self.resolve_namespace_defaults(child, scope)?;
         }
         Ok(())
@@ -1452,39 +1391,41 @@ impl Analyzer {
         let root = self.loader.root.clone();
 
         // Resolve namespaces
-        println!("Headers...");
+        //println!("Headers...");
         self.resolve_namespace_headers(&root, 0)?;
-        println!("Done.\n{:?}\n{:?}\nKinds...", self.azimuths, self.shapes);
-        self.resolve_namespace_kinds(&root, 0)?;
-        println!("Done.\n{:?}\n{:?}\nShapes...", self.azimuths, self.shapes);
+        //println!("Done.\n{:?}\n{:?}\nShapes...", self.azimuths, self.shapes);
         self.resolve_namespace_shapes(&root, 0)?;
-        println!("Done.\n{:?}\n{:?}\nDefaults...", self.azimuths, self.shapes);
+        //println!("Done.\n{:?}\n{:?}\nKinds...", self.azimuths, self.shapes);
+        self.resolve_namespace_kinds(&root, 0)?;
+        //println!("Done.\n{:?}\n{:?}\nDefaults...", self.azimuths, self.shapes);
         self.resolve_namespace_defaults(&root, 0)?;
-        println!("Done.\n{:?}\n{:?}\nStatements...", self.azimuths, self.shapes);
+        //println!("Done.\n{:?}\n{:?}\nStatements...", self.azimuths, self.shapes);
 
         // Resolve statements
         let mut resolved = Vec::new();
 
-        for (loc, namespace) in &load_order {
+        for (loc, namespace, namespace_id) in &load_order {
             let file = match files.get(&loc) {
                 Some(file) => file,
                 None => return Err(CompileError::Error { span:Span::new(0,0, loc.url.clone()), message: format!("Fucked up") }),
             };
 
-            let new_scope = self.create_scope(0);
-            self.get_scope_mut(new_scope).using.push([namespace.clone()].to_vec());
+            let new_scope = *self.namespace_scopes.get(&namespace_id).unwrap_or(&0);
 
             for statement in file {
                 resolved.push(self.resolve_statement(statement.clone(), new_scope)?);
+                //println!("Scope: {:?}, Root: {:?}", self.get_scope(new_scope), self.get_scope(0));
             }
         }
+        
+        println!("Done.\n");
     
         //println!("\n Resolved Ast: \n{:?}", resolved);
         Ok(resolved)
     }
 }
 
-pub fn analyze(loader: Loader) -> Result<Vec<ResolvedStatement>, CompileError> {
+pub fn analyze(loader: Loader) -> Result<(Vec<ResolvedStatement>, Analyzer), CompileError> {
     let mut analyzer = Analyzer::new(loader);
-    analyzer.analyze()
+    Ok((analyzer.analyze()?, analyzer))
 }

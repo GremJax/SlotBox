@@ -41,12 +41,14 @@ const OP_CHARS: &[char] = &[
 ];
 
 impl Operator {
-    pub fn kind(&self) -> ValueKind {
+    pub fn kind(&self, operand: ValueKind) -> ValueKind {
         match self {
-            Operator::Add | Operator::Mul | Operator::Div | Operator::Sub | Operator::Mod |
+            Operator::Mul | Operator::Div | Operator::Sub | Operator::Mod |
             Operator::BWAnd | Operator::BWOr | Operator::BWXor | Operator::BWNot | Operator::BWShiftL | Operator::BWShiftR |
             Operator::Inc | Operator::Dec | Operator::Len
                 => ValueKind::Int32,
+
+            Operator::Add => operand,
                 
             Operator::Equal | Operator::NEqual | Operator::And | Operator::Or | Operator::Not |
             Operator::LT | Operator::GT | Operator::LTE | Operator::GTE | 
@@ -55,6 +57,11 @@ impl Operator {
                 
             Operator::Range | Operator::RangeLT
                 => ValueKind::Array(Box::new(ValueKind::Int32)),
+
+            Operator::DQuestion => match operand {
+                ValueKind::Option(kind) => *kind,
+                kind => kind
+            }
 
             _ => ValueKind::None
         }

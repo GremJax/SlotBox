@@ -1,3 +1,5 @@
+using std
+
 shape Weapon : Named {
     DMG int = 1
 }
@@ -14,15 +16,14 @@ shape Creature : Named, Point, Speeding {
     MyWeapon Weapon?
 }
 
-let names = [
-    "bob", "beeb", "bib", "bab", "christ"
-]
-
 shape Game {
+    static const Names string[] = [
+        "bob", "beeb", "bib", "bab", "christ"
+    ]
 
     static NextGame() {
-        let index = Random.Range(0, (len names) - 1)
-        let name = names[index]
+        let index = Random.Range(0, (len Game.Names) - 1)
+        let name = Game.Names[index]
         let you := Creature
         if Random.Bool()
             you := Flying (

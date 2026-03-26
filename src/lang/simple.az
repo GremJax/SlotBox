@@ -1,8 +1,51 @@
+using std
+
 shape TestShape {
     TestValue int32 = 5
 }
+
+shape TestShapeChild : TestShape {
+    TestFunction(int32 x) {
+        print self.TestValue * x
+    }
+}
+
+shape EternalNesting {
+    Nested EternalNesting?
+
+    Nest(EternalNesting inside) {
+        if self.Nested == null self.Nested = inside
+        else self.Nested.Nest(inside)
+    }
+
+    Layers() -> string {
+        return "Bingus. \{self.Nested?.Layers() ?? "Such is the way."}"
+    }
+}
+
+static Bob int32 = 5
 
 let testObject := TestShape
 print testObject.TestValue
 testObject.TestValue = 10
 print testObject
+
+let secondObject := TestShapeChild
+secondObject.TestValue = 10
+print secondObject
+secondObject.TestFunction(5)
+
+
+let depth = 0
+let root := EternalNesting
+
+loop {
+    let input = IO.ReadLine() ?? "stop"
+    if input == "stop" break
+    
+    depth += 1
+    //let inside := EternalNesting
+    //root.Nest(inside)
+
+    print "Depth: \{depth}\n\{root.Layers()}"
+}

@@ -1,4 +1,5 @@
 use crate::analyzer::{LocalId, ResolvedFunctionBody};
+use crate::intrinsic::IntrinsicParameters;
 use crate::{CallStackFunction, Function, FunctionParameter, MappingTo};
 use crate::lexer::{Operator, Span};
 use crate::{
@@ -57,7 +58,13 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
             Ok(Value::Array(values, kind))
         },
         ResolvedExpression::Variable(_, Symbol::Object(k)) => Ok(Value::Object(k.id, ValueKind::Shape(OBJECT_INSTANCE))),
-        ResolvedExpression::Variable(_, Symbol::Local(k)) => Ok(runtime.get_local(k.id).clone()),
+        ResolvedExpression::Variable(span, Symbol::Local(k)) => { 
+            println!("{:?}, toget: {}", runtime.locals, k.id);
+            match runtime.get_local(k.id) {
+                Some(val) => Ok(val.clone()),
+                None => Err(RuntimeError::Error{span, message: format!("Missing local: {:?}", k)})
+            }
+        }
         
         ResolvedExpression::StringFormat(span, expressions) => {
             let mut string = String::new();
@@ -105,6 +112,14 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
 
         ResolvedExpression::BinaryOp { span, left, operator, right } => {
             match (evaluate(runtime, *left)?, operator, right.kind()) { 
+ 
+                // Option ??
+                (left, Operator::DQuestion, _) => {
+                    match left.kind() {
+                        ValueKind::None => Ok(evaluate(runtime, *right)?),
+                        _ => Ok(left)
+                    }
+                }
                 
                 // Bool - Bool
                 (Value::Bool(left), op, ValueKind::Bool) => 
@@ -190,8 +205,26 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
                     }
                 }
 
-                // Option ??
-                (Value::None, Operator::DQuestion, _) => Ok(evaluate(runtime, *right)?),
+                // Equality
+                (left, op, _) if matches!(op, Operator::Equal | Operator::NEqual) => {
+                    let right = evaluate(runtime, *right)?;
+                    match op {
+                        Operator::Equal => Ok((left == right).into()),
+                        Operator::NEqual => Ok((left != right).into()),
+                        
+                        operator => Err(RuntimeError::InvalidOperator { span, operator, operand: left.kind() }),
+                    }
+                }
+
+                // IsShape and NisShape
+                (Value::Object(id, _), op, ValueKind::Shape(inst)) => {
+                    match op {
+                        Operator::IsShape => Ok((runtime.is_shape(id, inst.id)).into()),
+                        Operator::NIsShape => Ok((!runtime.is_shape(id, inst.id)).into()),
+                        
+                        operator => Err(RuntimeError::InvalidOperator { span, operator, operand: ValueKind::Shape(inst) }),
+                    }
+                }
 
                 (left, op, right) => Err(RuntimeError::Error{ span, message: format!("Invalid operation: {:?} {:?} {:?}", left, op, right) })
             }
@@ -210,21 +243,22 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
             }
         }
         
-        ResolvedExpression::MemberAccess{ span, target, member, optional} => {
-            match (evaluate(runtime, *target)?, member) {
-                (Value::Object(object_id, _), azimuth) => {
-                    match runtime.get_slot_value(object_id, azimuth.id) {
+        ResolvedExpression::MemberAccess{ span, target, member, optional, chained} => {
+            println!("Target: {:?}", target);
+            match evaluate(runtime, *target)? {
+                Value::Object(object_id, _) => {
+                    match runtime.get_slot_value(object_id, member.id) {
                         Some(value) => Ok(value.clone()),
                         None if optional => Ok(Value::None),
-                        None => Err(RuntimeError::Error{span, message:format!("Member {:?} not found for {:?}", azimuth.name, object_id)}),
+                        None => Err(RuntimeError::Error{span, message:format!("Member {:?} not found for {:?}", member.name, object_id)}),
                     }
                 }
-                (Value::None, _) if optional => Ok(Value::None),
-                (other, member) => Err(RuntimeError::Error{span, message:format!("Member access not permitted for {:?}.{:?}", other, member)}),
+                Value::None if chained => Ok(Value::None),
+                other => Err(RuntimeError::Error{span, message:format!("Member access not permitted for {:?}.{:?}", other, member)}),
             }
         },
         
-        ResolvedExpression::ArrayAccess{ span, target, index} => {
+        ResolvedExpression::ArrayAccess{ span, target, index, optional, chained} => {
             let target = evaluate(runtime, *target)?;
             let index = evaluate(runtime, *index)?;
 
@@ -232,14 +266,16 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
                 (Value::Array(array, _), Value::Number(index)) => {
                     match array.get(index.to_i32() as usize) {
                         Some(value) => Ok(value.clone()),
+                        None if optional => Ok(Value::None),
                         None => return Err(RuntimeError::Error{span, message:format!("Index {:?} out of bounds", index)}),
                     }
                 }
+                (Value::None, _) if chained => Ok(Value::None),
                 (other, member) => Err(RuntimeError::Error{span, message:format!("Array access not permitted for {:?}.{:?}", other, member)}),
             }
         },
         
-        ResolvedExpression::FunctionCall{ span, target, args} => {
+        ResolvedExpression::FunctionCall{ span, target, args, optional, chained} => {
             let mut params = Vec::new();
             for arg in args {
                 params.push(evaluate(runtime, arg)?);
@@ -249,6 +285,7 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
 
             let func = match target {
                 Value::Function(func) => func,
+                Value::None if chained => return Ok(Value::None),
                 other => return Err(RuntimeError::Error{span, message:format!("{:?} is not a function or function chain", other)}),
             };
 
@@ -314,7 +351,10 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
                     }
                 }
                 Some(ResolvedFunctionBody::Intrinsic(func)) => {
-                    Ok(func(span, params, runtime)?)
+                    let input = IntrinsicParameters{
+                        span, args:params, runtime, azimuth:None
+                    };
+                    Ok(func(input)?)
                 }
             }
         },
@@ -346,16 +386,16 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
 
 pub fn evaluate_place(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<Value, RuntimeError> {
     match expression {
-        ResolvedExpression::MemberAccess{ span, target, member, optional} => {
-            match (evaluate(runtime, *target)?, member) {
-                (Value::Object(object_id, kind), azimuth) => {
-                    Ok(Value::Pointer(object_id, azimuth.id, kind))
+        ResolvedExpression::MemberAccess{ span, target, member, optional, chained} => {
+            match evaluate(runtime, *target)? {
+                Value::Object(object_id, kind) => {
+                    Ok(Value::Pointer(object_id, member.id, kind))
                 }
-                (Value::None, _) if optional => Ok(Value::None),
-                (other, member) => Err(RuntimeError::Error{span, message:format!("Member access not permitted for {:?}.{:?}", other, member)}),
+                Value::None if chained => Ok(Value::None),
+                other => Err(RuntimeError::Error{span, message:format!("Member access not permitted for {:?}.{:?}", other, member)}),
             }
         },
-        ResolvedExpression::ArrayAccess{ span, target, index} => {
+        ResolvedExpression::ArrayAccess{ span, target, index, optional, chained} => {
             let target = evaluate_place(runtime, *target)?;
             let index = evaluate(runtime, *index)?;
             
@@ -371,11 +411,12 @@ pub fn evaluate_place(runtime: &mut Runtime, expression:ResolvedExpression) -> R
                     todo!()
                     //Ok(Value::ArrayElement(id, kind, i))
                 }
+                Value::None if chained => Ok(Value::None),
                 other => Err(RuntimeError::Error{span, message:format!("Array access not permitted for {:?}[{}]", other, i)})
             }
             
         },
-        ResolvedExpression::Variable(_, Symbol::Local(k)) => Ok(Value::Local(k.id, runtime.get_local(k.id).kind())),
+        ResolvedExpression::Variable(_, Symbol::Local(k)) => Ok(Value::Local(k.id, runtime.get_local(k.id).unwrap().kind())),
         other => evaluate(runtime, other), 
     }
 }
@@ -463,7 +504,7 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
 
             let shape = evaluate_shape(runtime, shape);
             if let ValueKind::Shape(inst) = shape.clone() {
-                runtime.attach_shape(id, inst);
+                runtime.attach_shape(span.clone(), id, inst)?;
             }
             
             runtime.reserve_local(local, Value::Object(id, shape));
@@ -476,7 +517,7 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
                 (Value::Object(object_id, _), ValueKind::Shape(shape_inst)) => {
                     let sealed = runtime.get_object(object_id).flags.sealed;
                     if !sealed {
-                        runtime.detach_shape(object_id, shape_inst)
+                        runtime.detach_shape(span.clone(), object_id, shape_inst)?
                     }
                 }
                 (object, shape) => return Err(RuntimeError::Error{span, message:format!("Could not detach {:?} from {:?}", shape, object)})
@@ -489,7 +530,7 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
                 Value::Object(object_id, _) => {
                         let sealed = runtime.get_object(object_id).flags.sealed;
                         if !sealed {
-                            runtime.remap_slot(object_id, mapping.to.id, mapping.from.id)
+                            runtime.remap_slot(span.clone(), object_id, mapping.to.id, mapping.from.id)?
                         }
                     }
                 object => return Err(RuntimeError::Error{span, message:format!("Invalid mapping: {:?}, {:?} -> {:?}", object, mapping.from, mapping.to)}),
@@ -508,7 +549,27 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
                         remap.push(Mapping{from: mapping.from.id, to: MappingTo::Single(mapping.to.id)});
                     }
 
-                    runtime.attach_shape_with_remap(object_id, shape_inst, remap);
+                    runtime.attach_shape_with_remap(span.clone(), object_id, shape_inst.clone(), remap)?;
+
+                    // Defaults
+                    let defaults = {
+                        let mut defaults = Vec::new();
+                        let shape = runtime.get_shape(shape_inst.id).unwrap();
+                        for az in &shape.azimuths {
+                            let azimuth = runtime.get_azimuth(*az);
+                            match &azimuth.default_value {
+                                None => continue,
+                                Some(value) => {
+                                    defaults.push((*az, *value.clone()))
+                                }
+                            }
+                        }
+                        defaults
+                    };
+                    for (az, default) in defaults {
+                        let value = evaluate(runtime, default)?;
+                        runtime.set_slot_value(span.clone(), object_id, az, value)?;
+                    }
 
                 },
                 (object, shape) => return Err(RuntimeError::Error{span, message:format!("Could not attach {:?} to {:?}", shape, object)})
@@ -521,7 +582,7 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
 
             match evaluate_place(runtime, target)? {
                 Value::Pointer(object_id, az, kind) => {
-                    runtime.set_slot_value(object_id, az, val);
+                    runtime.set_slot_value(span.clone(), object_id, az, val)?;
                 }
                 Value::ArrayElement(obj, az, kind, i) => {
                     runtime.set_slot_value_array_element(obj, az, i, val);

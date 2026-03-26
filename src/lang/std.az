@@ -3,7 +3,15 @@ print "loading standard library..."
 shape Object {} 
 
 shape Math {
-    
+
+    static Neg(int32 x) -> int32 
+        return -x
+    static BWNot(int32 x) -> int32 
+        return ~x
+        
+    static Succ(int32 x) -> int32 
+        return x + 1
+
     static Add(int32 a, int32 b) -> int32 
         return a + b
     static Sub(int32 a, int32 b) -> int32 
@@ -14,6 +22,17 @@ shape Math {
         return a / b
     static Mod(int32 a, int32 b) -> int32 
         return a % b
+        
+    static BWAnd(int32 a, int32 b) -> int32 
+        return a & b
+    static BWOr(int32 a, int32 b) -> int32 
+        return a | b
+    static BWXor(int32 a, int32 b) -> int32 
+        return a ^ b
+    static BWLShift(int32 a, int32 b) -> int32 
+        return a << b
+    static BWRShift(int32 a, int32 b) -> int32 
+        return a >> b
 
     static Abs(int32 x) -> int32 
         return (x >= 0) ? x : -x
@@ -30,6 +49,27 @@ shape Math {
         return (x % 2) == 0
     static IsOdd(int32 x) -> bool
         return (x % 2) != 0
+        
+    static GCD(int32 a, int32 b) -> int32 {
+        while b != 0 {
+            let temp = b
+            b = a % b
+            a = temp
+        }
+        return a
+    }
+    static LCM(int32 a, int32 b) -> int32 {
+        if a == 0 || b == 0 return 0
+        return (a / Math.GCD(a, b)) * b
+    }
+    static Mid(int32 a, int32 b) -> int32 {
+        let max = Math.Max(a,b)
+        let min = Math.Min(a,b)
+        return min + ((max - min) / 2)
+    }
+    
+    static Reflect(int32 x, int32 mid) -> int32 
+        return (2 * mid) - x
 
     static Pow(int32 x, int32 exp) -> int32 {
         let res = 1

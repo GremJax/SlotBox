@@ -41,6 +41,10 @@ pub enum ValueKind {
 
 impl ValueKind {
     fn is_assignable_from(&self, other: ValueKind) -> bool {
+        let other = match other {
+            ValueKind::Option(kind) => *kind,
+            kind => kind
+        };
         match self {
             ValueKind::UInt64 => other == ValueKind::Number || other.is_assignable_from(ValueKind::Number),
             ValueKind::Int32 => other == ValueKind::Number || other.is_assignable_from(ValueKind::Number),
@@ -197,6 +201,8 @@ pub enum Value {
     Pointer(ObjectId, AzimuthId, ValueKind),
     ArrayElement(ObjectId, AzimuthId, ValueKind, usize),
 
+    Shape(ShapeInstance),
+
     Function(Box<Function>),
     FunctionChain(Vec<AzimuthId>, FunctionSignature),
 
@@ -233,6 +239,7 @@ impl Value {
             Value::Array(_, value_type) => ValueKind::Array(Box::new(value_type.clone())),
             Value::Azimuth(s) => ValueKind::Azimuth(Box::new(s.value_type.clone())),
             Value::Object(_, kind) => kind.clone(),
+            Value::Shape(inst) => ValueKind::Shape(inst.clone()),
             Value::Local(_, kind) => kind.clone(),
             Value::Pointer(_, _, kind) => kind.clone(),
             Value::ArrayElement(_, _, kind, _) => kind.clone(),
@@ -416,7 +423,7 @@ pub struct Object {
 impl Object {
     fn allocate_slot(&mut self) -> SlotStateId {
         if let Some(id) = self.free_slots.pop() {
-            self.slot_states[(id - 1) as usize] = SlotState::default();
+            self.slot_states[id as usize] = SlotState::default();
             id
         } else {
             let id = self.next_slot_state_id;
@@ -427,22 +434,22 @@ impl Object {
     }
 
     fn free_slot(&mut self, slot_id: SlotStateId) {
-        if (slot_id - 1) as usize >= self.slot_states.len() {
+        if slot_id as usize >= self.slot_states.len() {
             panic!("Invalid slot ID");
         }
-        self.slot_states[(slot_id - 1) as usize] = SlotState::default();
+        self.slot_states[slot_id as usize] = SlotState::default();
         self.free_slots.push(slot_id);
     }
 
     fn get_slot_state(&self, slot_id: SlotStateId) -> Option<&SlotState> {
-        self.slot_states.get((slot_id - 1) as usize)
+        self.slot_states.get(slot_id as usize)
     }
 
     fn set_slot_state(&mut self, slot_id: SlotStateId, value: Value) {
-        if (slot_id - 1) as usize >= self.slot_states.len() {
+        if slot_id as usize >= self.slot_states.len() {
             panic!("Invalid slot ID");
         }
-        let state = &mut self.slot_states[(slot_id - 1) as usize];
+        let state = &mut self.slot_states[slot_id as usize];
         state.storage = value;
     }
 
@@ -470,12 +477,12 @@ impl Object {
         None
     }
 
-    fn set_value(&mut self, azimuth:AzimuthId, value:Value) -> Result<Value, RuntimeError> {
+    fn set_value(&mut self, span:Span, azimuth:AzimuthId, value:Value) -> Result<Value, RuntimeError> {
         for (azimuth_state, slot_state_id) in self.slot_mapping.clone() {
             if azimuth_state.azimuth == azimuth {
 
                 if !value.kind().is_assignable_from(azimuth_state.value_type.clone()) {
-                    panic!("Type mismatch: {:?} not assignable from {:?}", value.kind(), azimuth_state.value_type);
+                    return Err(RuntimeError::Error{span, message: format!("AAA Type mismatch: {:?} not assignable from {:?}", value.kind(), azimuth_state.value_type)});
                 }
 
                 // Slot found
@@ -483,7 +490,7 @@ impl Object {
                 return Ok(value);
             }
         }
-        panic!("No such azimuth {:?} to assign to {:?}", azimuth, value);
+        return Err(RuntimeError::Error{span, message: format!("No such azimuth {:?} to assign to {:?}", azimuth, value)});
     }
 }
      
@@ -496,8 +503,8 @@ pub struct CallStackFunction {
 
 // Runtime
 pub struct Runtime {
-    shapes: Vec<Shape>,    
-    azimuths: Vec<Azimuth>,
+    shapes: HashMap<u32, ShapeInfo>,    
+    azimuths: HashMap<u32, AzimuthInfo>,
     objects: HashMap<ObjectId, Object>,
     locals: HashMap<LocalId, Value>,
     obj_ref_count: HashMap<ObjectId, u32>,
@@ -506,7 +513,7 @@ pub struct Runtime {
 }
 
 impl Runtime {
-    fn new() -> Self {
+    fn new(shapes: HashMap<u32, ShapeInfo>, azimuths: HashMap<u32, AzimuthInfo>) -> Result<Self, RuntimeError> {
         let global = Object {
                 id: 0,
                 name: format!("global"),
@@ -519,8 +526,8 @@ impl Runtime {
                 next_slot_state_id: 1,
             };
         let mut runtime = Runtime {
-            shapes: Vec::new(),
-            azimuths: Vec::new(),
+            shapes,
+            azimuths,
             objects: HashMap::new(),
             locals: HashMap::new(),
             obj_ref_count: HashMap::new(),
@@ -528,7 +535,85 @@ impl Runtime {
             call_stack: Vec::new(),
         };
         runtime.objects.insert(0, global);
-        runtime
+        runtime.init_static_instances()?;
+        Ok(runtime)
+    }
+
+    fn init_static_instances(&mut self) -> Result<(), RuntimeError> {
+        let shapes = {
+            // Gather static shapes and their static azimuths
+            let mut shapes = Vec::new();
+
+            let mut known_shapes : Vec<&ShapeInfo> = self.shapes.values().collect();
+            known_shapes.sort_by(|a, b| (a.id).cmp(&b.id));
+
+            for shape in known_shapes {
+                match &shape.static_id {
+                    None => continue,
+                    Some(info) => {
+                        let mut azimuths = Vec::new();
+
+                        for az_id in &shape.azimuths {
+                            let azimuth = self.get_azimuth(*az_id);
+                            
+                            //println!("Found azimuth id {}: {:?}\n", az_id, azimuth);
+
+                            if !azimuth.flags.is_static { continue }
+
+                            azimuths.push((*az_id, azimuth.value_type.clone(), azimuth.default_value.clone()));
+                        }
+                        
+                        shapes.push((*info.clone(), azimuths));
+                    }
+                }
+            }
+            shapes
+        };
+
+        let evaluated_shapes = {
+            let mut evaluated_shapes = Vec::new();
+            for (static_info, raw_azimuths) in shapes {
+                let mut azimuths = Vec::new();
+
+                for (id, value_type, value) in raw_azimuths {
+                    let mut span = Span::default();
+
+                    //println!("Evaluating {}: {:?}\n", id, value);
+
+                    let evaluated = match value {
+                        None => None,
+                        Some(expr) => {
+                            span = (*expr).span().clone();
+                            Some(executor::evaluate(self, *expr)?)
+                        }
+                    };
+                    azimuths.push((id, value_type, evaluated, span));
+                }
+
+                evaluated_shapes.push((static_info, azimuths));
+            }
+            evaluated_shapes
+        };
+        
+        for (static_info, azimuths) in evaluated_shapes {
+            let id = static_info.id;
+            self.create_object(static_info);
+            let object = self.get_object_mut(id);
+
+            for (az_id, value_type, default_value, span) in azimuths {
+                let az_state = AzimuthState { azimuth: az_id, value_type: value_type };
+                let state_id = object.allocate_slot();
+                object.slot_mapping.push((az_state, state_id));
+                match default_value {
+                    Some(value) => {
+                        object.set_value(span, az_id, value)?;
+                    }
+                    None => {}
+                }
+            }
+        }
+
+        Ok(())
     }
 
     fn create_object(&mut self, info: ObjectInfo) {
@@ -542,115 +627,53 @@ impl Runtime {
             slot_mapping: Vec::new(),
             slot_states: Vec::new(),
             free_slots: Vec::new(),
-            next_slot_state_id: 1,
+            next_slot_state_id: 0,
         };
-
+                
         println!("Created object with ID {}, '{}'", object.id, object.name);
         self.objects.insert(id, object);
         self.obj_ref_count.insert(id, 0);
     }
 
-    fn create_shape(&mut self, info: ShapeInfo) {
-        let static_object_id = match info.static_id {
-            Some(info) => {
-                let id = info.id.clone();
-                self.create_object(*info);
-                id
-            }
-            _ => 0,   
-        };
-
-        let mut def_mappings = HashMap::new();
-        for mapping in info.mappings {
-            def_mappings.insert(mapping.to.id, mapping.from.id);
-        }
-
-        let shape = Shape {
-            id: info.id,
-            name: info.name,
-            azimuths: info.azimuths,
-            def_mappings,
-            parent_ids: info.parent_ids,
-            static_object_id: static_object_id,
-            num_generics: info.generics.len() as u32,
-        };
-        self.shapes.push(shape);
+    fn attach_slot(&mut self, span:Span, object_id: ObjectId, slot: AzimuthId) -> Result<bool, RuntimeError> {
+        self.attach_slot_remap(span, object_id, slot, None)
     }
 
-    fn create_azimuth(&mut self, info: AzimuthInfo) {
-        let name = info.name.clone();
-        let id = info.id.clone();
-
-        let azimuth = Azimuth {
-            id: info.id,
-            name: info.name,
-            value_type: info.value_type.clone(),
-            shape_id: info.shape_id,
-            flags: info.flags.clone(),
-        };
-        self.azimuths.push(azimuth);
-
-        if info.flags.is_static {
-            // Allocate static slot
-            let static_object_id = self.get_shape(info.shape_id).static_object_id.clone();
-
-            let object = self.get_object_mut(static_object_id);
-            let az_state = AzimuthState{ azimuth: info.id.clone(), value_type: info.value_type };
-            let state_id = object.allocate_slot();
-            object.slot_mapping.push((az_state, state_id));
-
-            match info.default_value {
-                Some(expr) => {
-                    let evaluated: Value = executor::evaluate(self, *expr).unwrap();
-                    self.set_slot_value(static_object_id, info.id, evaluated);
-                }
-                _ => {}
-            }
-        }
-
-        println!("Created azimuth with ID {}, '{}'", id, name);
-    }
-
-    fn define_remapping_on_shape(&mut self, shape_id: ShapeId, from: AzimuthId, to: AzimuthId) {
-        let shape = self.get_shape_mut(shape_id);
-        shape.remap_slot(from, to);
-        println!("Mapping {} -> {} in shape {}", from, to, shape.name);
-    }
-
-    fn attach_slot(&mut self, object_id: ObjectId, slot: AzimuthId) {
-        self.attach_slot_remap(object_id, slot, None);
-    }
-
-    fn attach_slot_generic(&mut self, object_id: ObjectId, slot: AzimuthId, generic: Option<ValueKind>) {
-        self.attach_slot_remap_generic(object_id, slot, None, generic);
+    fn attach_slot_generic(&mut self, span:Span, object_id: ObjectId, slot: AzimuthId, generic: Option<ValueKind>) -> Result<bool, RuntimeError> {
+        self.attach_slot_remap_generic(span, object_id, slot, None, generic)
     }
     
-    fn attach_slot_remap(&mut self, object_id: ObjectId, slot: AzimuthId, remap: Option<AzimuthId>) {
-        self.attach_slot_remap_generic(object_id, slot, remap, None);
+    fn attach_slot_remap(&mut self, span:Span, object_id: ObjectId, slot: AzimuthId, remap: Option<AzimuthId>) -> Result<bool, RuntimeError> {
+        self.attach_slot_remap_generic(span, object_id, slot, remap, None)
     }
 
-    fn attach_slot_remap_generic(&mut self, object_id: ObjectId, azimuth_id: AzimuthId, remap: Option<AzimuthId>, generic: Option<ValueKind>) {
+    fn attach_slot_remap_generic(&mut self, span:Span, object_id: ObjectId, azimuth_id: AzimuthId, remap: Option<AzimuthId>, generic: Option<ValueKind>) -> Result<bool, RuntimeError> {
         let azimuth = self.get_azimuth(azimuth_id).clone();
-        let shape = self.get_shape(azimuth.shape_id);
+        let shape = match self.get_shape(azimuth.shape_id) {
+            Some(info) => info,
+            None => return Err(RuntimeError::Error{span, message: format!("Shape not found for azimuth: {:?}", azimuth)}),
+        };
         let target_slot_id;
         
         if let Some(remap_id) = remap {
             let remap_slot = self.get_azimuth(remap_id);
             if !generic.clone().unwrap_or(azimuth.value_type.clone()).is_assignable_from(remap_slot.value_type.clone()) { 
-                panic!("Type mismatch: {:?} not assignable from {:?}", azimuth.name, remap_slot.value_type); 
+                return Err(RuntimeError::Error{span, message: format!("Type mismatch: {:?} not assignable from {:?}", azimuth.name, remap_slot.value_type)}); 
             }
             
             target_slot_id = remap_id;
             println!("- Will remap {} -> {} (explicit)", azimuth.name, remap_slot.name);
         }
         // Find default remapping if exists
-        else if let Some(remapped_id) = shape.def_mappings.get(&azimuth_id) {
-            let remapped_slot = self.get_azimuth(*remapped_id);
+        else if let Some(mapping) = shape.mappings.iter().find(|map| map.to.id == azimuth_id) {
+            let remapped_id = mapping.from.id;
+            
+            let remapped_slot = self.get_azimuth(remapped_id);
             if !generic.clone().unwrap_or(azimuth.value_type.clone()).is_assignable_from(remapped_slot.value_type.clone()) { 
-                panic!("Type mismatch: {:?} not assignable from {:?}", azimuth.name, remapped_slot.value_type); 
+                return Err(RuntimeError::Error{span, message: format!("Type mismatch: {:?} not assignable from {:?}", azimuth.name, remapped_slot.value_type)}); 
             }
 
-            target_slot_id = *remapped_id;
+            target_slot_id = remapped_id;
             println!("- Will remap {} -> {}", azimuth.name, remapped_slot.name);
         } else {
 
@@ -663,7 +686,7 @@ impl Runtime {
         let object = self.get_object_mut(object_id);
 
         if object.has_azimuth(azimuth_id) {
-            return
+            return Ok(false)
             //panic!("Slot already attached to object");
         }
 
@@ -688,6 +711,7 @@ impl Runtime {
 
         let azimuth_state = AzimuthState{azimuth: azimuth_id, value_type: generic.unwrap_or(azimuth.value_type.clone())};
         object.slot_mapping.push((azimuth_state, state_id));
+        Ok(true)
     }
 
     fn detach_slot(&mut self, object_id: ObjectId, slot: AzimuthId) {
@@ -708,53 +732,29 @@ impl Runtime {
         }
     }
 
-    fn remap_slot(&mut self, object_id: ObjectId, to: AzimuthId, from: AzimuthId) {
+    fn remap_slot(&mut self, span:Span, object_id: ObjectId, to: AzimuthId, from: AzimuthId) -> Result<(), RuntimeError> {
         let to_azimuth = self.get_azimuth(to).clone();
         let object = self.get_object_mut(object_id);
 
         if let Some(to_id) = object.get_slot_state_id(to) {
             let azimuth_state = AzimuthState{azimuth: from.clone(), value_type: to_azimuth.value_type.clone()};
             object.slot_mapping.push((azimuth_state, to_id));
+            Ok(())
         } else {
-            panic!("Target slot {} not attached to object", to_azimuth.name);
+            Err(RuntimeError::Error{span, message: format!("Target slot {} not attached to object", to_azimuth.name)})
         }
     }
 
-    fn attach_shape(&mut self, object_id: ObjectId, shape_id: ShapeInstance) {
-        let (shape_name, azimuths, parents, num_generics) = {
-            let shape = self.get_shape(shape_id.id);
-
-            if shape.num_generics != (shape_id.generics.len() as u32) {
-                panic!("Invalid number of generic arguments: {:?}", shape_id.generics);
-            }
-
-            (shape.name.clone(), shape.azimuths.clone(), shape.parent_ids.clone(), shape.num_generics)
-        };
-
-        println!("Attaching shape {} to object {}", shape_name, object_id);
-
-        for parent in parents{
-            self.attach_shape(object_id, ShapeInstance{ id:parent, generics:Vec::new() });
-        }
-
-        for id in azimuths {
-            let azimuth = self.get_azimuth(id);
-            if azimuth.flags.is_static { continue; }
-
-            let generic_type = match azimuth.value_type {
-                ValueKind::Generic(generic) => {
-                    shape_id.generics.get(generic as usize).cloned()
-                }
-                _ => None,
-            };
-
-            self.attach_slot_generic(object_id, id, generic_type);
-        }
+    fn attach_shape(&mut self, span:Span, object_id: ObjectId, shape_id: ShapeInstance) -> Result<(), RuntimeError> {
+        self.attach_shape_with_remap(span, object_id, shape_id, Vec::new())
     }
 
-    fn detach_shape(&mut self, object_id: ObjectId, shape_id: ShapeInstance) {
+    fn detach_shape(&mut self, span:Span, object_id: ObjectId, shape_id: ShapeInstance) -> Result<(), RuntimeError> {
         let (shape_name, azimuths) = {
-            let shape = self.get_shape(shape_id.id);
+            let shape = match self.get_shape(shape_id.id) {
+                Some(info) => info,
+                None => return Err(RuntimeError::Error{span, message: format!("Shape not found: {:?}", shape_id)}),
+            };
             (shape.name.clone(), shape.azimuths.clone())
         };
 
@@ -766,26 +766,30 @@ impl Runtime {
 
             self.detach_slot(object_id, azimuth_id);
         }
+        Ok(())
     }
 
-    fn attach_shape_with_remap(&mut self, object_id: ObjectId, shape_id: ShapeInstance, remap: Vec<Mapping>,) {
+    fn attach_shape_with_remap(&mut self, span:Span, object_id: ObjectId, shape_id: ShapeInstance, remap: Vec<Mapping>,) -> Result<(), RuntimeError> {
         let (shape_name, azimuths, parents, num_generics) = {
-            let shape = self.get_shape(shape_id.id);
+            let shape = match self.get_shape(shape_id.id) {
+                Some(info) => info,
+                None => return Err(RuntimeError::Error{span, message: format!("Shape not found: {:?}", shape_id)}),
+            };
 
-            if shape.num_generics != (shape_id.generics.len() as u32) {
-                panic!("Invalid number of generic arguments: {:?}", shape_id.generics);
+            if shape.generics.len() != shape_id.generics.len() {
+                return Err(RuntimeError::Error{span, message: format!("Invalid number of generic arguments: {:?}", shape_id.generics)});
             }
 
-            (shape.name.clone(), shape.azimuths.clone(), shape.parent_ids.clone(), shape.num_generics)
+            (shape.name.clone(), shape.azimuths.clone(), shape.parent_ids.clone(), shape.generics.len())
         };
 
         println!(
-            "Attaching shape {} to object {} with remapping",
+            "Attaching shape {} to object {}",
             shape_name, object_id
         );
 
         for parent in parents{
-            self.attach_shape(object_id, ShapeInstance{ id:parent, generics:Vec::new() });
+            self.attach_shape(span.clone(), object_id, ShapeInstance{ id:parent, generics:Vec::new() })?;
         }
 
         for az_id in azimuths {
@@ -803,7 +807,9 @@ impl Runtime {
                 remap.iter().find(|m| m.from == az_id).map(|m| m.to.clone())
             {
                 match remapped {
-                    MappingTo::Single(az) => self.attach_slot_remap_generic(object_id, az_id, Some(az), generic_type),
+                    MappingTo::Single(az) => {
+                        self.attach_slot_remap_generic(span.clone(), object_id, az_id, Some(az), generic_type)?;
+                    }
                     MappingTo::Chain(chain) => todo!(),
                     MappingTo::Expression(expr) => {
                         let to = executor::evaluate_place(self, expr).unwrap();
@@ -811,9 +817,10 @@ impl Runtime {
                     }
                 }
             } else {
-                self.attach_slot_generic(object_id, az_id, generic_type);
+                self.attach_slot_generic(span.clone(), object_id, az_id, generic_type)?;
             }
         }
+        Ok(())
     }
 
     fn get_object(&self, id: ObjectId) -> &Object {
@@ -824,25 +831,25 @@ impl Runtime {
         self.objects.get_mut(&id).expect(format!("Object {} not found", id).as_str())
     }
 
-    fn get_azimuth(&self, id: AzimuthId) -> &Azimuth {
-        self.azimuths.get(id as usize).expect(format!("Azimuth {} not found", id).as_str())
+    fn get_azimuth(&self, id: AzimuthId) -> &AzimuthInfo {
+        self.azimuths.get(&id).expect(format!("Azimuth {} not found", id).as_str())
     }
 
-    fn get_azimuth_mut(&mut self, id: AzimuthId) -> &Azimuth {
-        self.azimuths.get_mut(id as usize).expect(format!("Azimuth {} not found", id).as_str())
+    fn get_azimuth_mut(&mut self, id: AzimuthId) -> &AzimuthInfo {
+        self.azimuths.get_mut(&id).expect(format!("Azimuth {} not found", id).as_str())
     }
 
-    fn get_shape(&self, id: ShapeId) -> &Shape {
-        self.shapes.get(id as usize).expect("Shape not found")
+    fn get_shape(&self, id: ShapeId) -> Option<&ShapeInfo> {
+        self.shapes.get(&id)
     }
 
-    fn get_shape_mut(&mut self, id: ShapeId) -> &mut Shape {
-        self.shapes.get_mut(id as usize).expect("Shape not found")
+    fn get_shape_mut(&mut self, id: ShapeId) -> Option<&mut ShapeInfo> {
+        self.shapes.get_mut(&id)
     }
 
-    fn get_local(&self, id: LocalId) -> &Value {
+    fn get_local(&self, id: LocalId) -> Option<&Value> {
         //println!("searching for local {}...", id);
-        self.locals.get(&id).expect("local not found")
+        self.locals.get(&id)
     }
 
     fn reserve_local(&mut self, id: LocalId, value:Value) {
@@ -913,12 +920,12 @@ impl Runtime {
 
     fn is_shape(&self, object_id: ObjectId, shape_id: ShapeId) -> bool {
         let object = self.get_object(object_id);
-        let shape = self.get_shape(shape_id);
+        let shape = self.get_shape(shape_id).unwrap();
 
         shape.azimuths.iter().map(|id| self.get_azimuth(*id)).all(|slot| {
             if slot.flags.is_static {
-                let static_object = self.get_object(shape.static_object_id);
-                object.has_azimuth(slot.id) || static_object.has_azimuth(slot.id)
+                //let static_object = self.get_object(shape.static_id);
+                object.has_azimuth(slot.id) //|| static_object.has_azimuth(slot.id)
             } else {
                 object.has_azimuth(slot.id)
             }
@@ -936,19 +943,27 @@ impl Runtime {
         // Static
         let azimuth = self.get_azimuth(slot);
         if azimuth.flags.is_static {
-            let static_id = self.get_shape(azimuth.shape_id).static_object_id.clone();
+            //println!("Static azimuth found. Getting static Id");
+            let static_id = match &self.get_shape(azimuth.shape_id).unwrap().static_id {
+                Some(info) => {
+                    //println!("Id: {}", info.id);
+                    info.id
+                }
+                None => return None,
+            };
             if static_id == object_id { return None; }
             
             return self.get_slot_value(static_id, slot);
         }
+
         None
     }
 
     fn get_slot_value_mut(&mut self, object_id: ObjectId, slot: AzimuthId) -> Option<&mut Value> {
         let object = self.get_object_mut(object_id);
         if let Some(state_id) = object.get_slot_state_id(slot.clone()) {
-            if ((state_id - 1) as usize) < object.slot_states.len() {
-                return Some(&mut object.slot_states[(state_id - 1) as usize].storage);
+            if (state_id as usize) < object.slot_states.len() {
+                return Some(&mut object.slot_states[state_id as usize].storage);
             }
         }
         None
@@ -961,7 +976,7 @@ impl Runtime {
         None
     }
 
-    fn set_slot_value(&mut self, object_id: ObjectId, slot: AzimuthId, value: Value) {
+    fn set_slot_value(&mut self, span:Span, object_id: ObjectId, slot: AzimuthId, value: Value) -> Result<(), RuntimeError> {
         match value {
             Value::Object(id, _) => { 
                 self.obj_ref_count.insert(id, self.obj_ref_count.get(&id).unwrap_or(&0) + 1); 
@@ -983,13 +998,14 @@ impl Runtime {
         }
         
         let object = self.get_object_mut(object_id);
-        object.set_value(slot, value.clone());
+        object.set_value(span, slot, value.clone())?;
 
         println!("Set obj{:?}.{:?} to {:?}", object.name, slot, value);
+        Ok(())
     }
 
-    fn set_slot_value_array(&mut self, object_id: ObjectId, slot: AzimuthId, values: Vec<Value>, kind: ValueKind) {
-        self.set_slot_value(object_id, slot, Value::Array(values.into_iter().collect(), kind));
+    fn set_slot_value_array(&mut self, span:Span, object_id: ObjectId, slot: AzimuthId, values: Vec<Value>, kind: ValueKind) -> Result<(), RuntimeError> {
+        self.set_slot_value(span, object_id, slot, Value::Array(values.into_iter().collect(), kind))
     }
     fn set_slot_value_array_element(&mut self, object_id: ObjectId, slot: AzimuthId, index: usize, value: Value) {
         if let Some(Value::Array(arr, _)) = self.get_slot_value_mut(object_id, slot) {
@@ -1099,12 +1115,12 @@ fn main() {
         Ok(loader) => loader,
     };
 
-    let resolved_ast = match analyzer::analyze(loader){
+    let (resolved_ast, analyzer) = match analyzer::analyze(loader){
         Err(error) => panic!("Could not compile:\n{}", error),
         Ok(resolved_ast) => resolved_ast,
     };
 
-    let mut runtime = Runtime::new();
+    let mut runtime = Runtime::new(analyzer.shapes, analyzer.azimuths).expect("RuntimeError");
     match executor::execute(&mut runtime, resolved_ast){
         Err(error) => runtime.panic_stack_trace(error),
         _ => println!("Program executed successfully."),

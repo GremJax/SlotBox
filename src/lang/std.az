@@ -2,7 +2,7 @@ print "loading standard library..."
 
 shape Object {} 
 
-shape Math {
+namespace Math {
 
     static Neg(int32 x) -> int32 
         return -x
@@ -41,7 +41,7 @@ shape Math {
     static Min(int32 a, int32 b) -> int32 
         return (a <= b) ? a : b
     static Clamp(int32 x, int32 min, int32 max) -> int32 
-        return Math.Max(min, Math.Min(max, x))
+        return Max(min, Min(max, x))
     static Sgn(int32 x) -> int32 
         return (x > 0) ? 1 : (x < 0) ? -1 : 0
 
@@ -60,11 +60,11 @@ shape Math {
     }
     static LCM(int32 a, int32 b) -> int32 {
         if a == 0 || b == 0 return 0
-        return (a / Math.GCD(a, b)) * b
+        return (a / GCD(a, b)) * b
     }
     static Mid(int32 a, int32 b) -> int32 {
-        let max = Math.Max(a,b)
-        let min = Math.Min(a,b)
+        let max = Max(a,b)
+        let min = Min(a,b)
         return min + ((max - min) / 2)
     }
     
@@ -79,19 +79,19 @@ shape Math {
         return res
     }
 
-    intrinsic static Sqrt(int32 x) -> int32
+    static intrinsic Sqrt(int32 x) -> int32
 }
 
-shape IO {
+namespace IO {
     static Print(string x) print x
 
-    intrinsic static ReadLine() -> string?
-    intrinsic static Args() -> string[]
+    static intrinsic ReadLine() -> string?
+    static intrinsic Args() -> string[]
 }
 
-shape Random {
-    intrinsic static Int() -> int32
-    intrinsic static Range(int from, int to) -> int32
+namespace Random {
+    static intrinsic Int() -> int32
+    static intrinsic Range(int from, int to) -> int32
 
     static Chance(int chance) -> bool 
         return Random.Range(1, chance) == 1

@@ -513,7 +513,7 @@ pub struct Runtime {
 }
 
 impl Runtime {
-    fn new(shapes: HashMap<u32, ShapeInfo>, azimuths: HashMap<u32, AzimuthInfo>) -> Result<Self, RuntimeError> {
+    fn new(shapes: HashMap<u32, ShapeInfo>, azimuths: HashMap<u32, AzimuthInfo>) -> Self {
         let global = Object {
                 id: 0,
                 name: format!("global"),
@@ -535,39 +535,32 @@ impl Runtime {
             call_stack: Vec::new(),
         };
         runtime.objects.insert(0, global);
-        runtime.init_static_instances()?;
-        Ok(runtime)
+        runtime
     }
 
-    fn init_static_instances(&mut self) -> Result<(), RuntimeError> {
+    fn init_static_instances(&mut self, static_info: HashMap<u32, (ObjectInfo, Vec<AzimuthId>)>) -> Result<(), RuntimeError> {
         let shapes = {
-            // Gather static shapes and their static azimuths
-            let mut shapes = Vec::new();
+            let mut namespaceinfo = Vec::new();
 
-            let mut known_shapes : Vec<&ShapeInfo> = self.shapes.values().collect();
-            known_shapes.sort_by(|a, b| (a.id).cmp(&b.id));
+            let mut namespaces : Vec<(&u32, &(ObjectInfo, Vec<AzimuthId>))> = static_info.iter().collect();
+            namespaces.sort_by(|(a,_), (b,_)| (a).cmp(b));
 
-            for shape in known_shapes {
-                match &shape.static_id {
-                    None => continue,
-                    Some(info) => {
-                        let mut azimuths = Vec::new();
+            for (_, (info, azimuths)) in namespaces {
+                let mut raw_azimuths = Vec::new();
 
-                        for az_id in &shape.azimuths {
-                            let azimuth = self.get_azimuth(*az_id);
-                            
-                            //println!("Found azimuth id {}: {:?}\n", az_id, azimuth);
+                for az_id in azimuths {
+                    let azimuth = self.get_azimuth(*az_id);
+                    
+                    //println!("Found azimuth id {}: {:?}\n", az_id, azimuth);
 
-                            if !azimuth.flags.is_static { continue }
+                    if !azimuth.flags.is_static { continue }
 
-                            azimuths.push((*az_id, azimuth.value_type.clone(), azimuth.default_value.clone()));
-                        }
-                        
-                        shapes.push((*info.clone(), azimuths));
-                    }
+                    raw_azimuths.push((*az_id, azimuth.value_type.clone(), azimuth.default_value.clone()));
                 }
+                
+                namespaceinfo.push((info.clone(), raw_azimuths));
             }
-            shapes
+            namespaceinfo
         };
 
         let evaluated_shapes = {
@@ -1120,8 +1113,8 @@ fn main() {
         Ok(resolved_ast) => resolved_ast,
     };
 
-    let mut runtime = Runtime::new(analyzer.shapes, analyzer.azimuths).expect("RuntimeError");
-    match executor::execute(&mut runtime, resolved_ast){
+    let mut runtime = Runtime::new(analyzer.shapes, analyzer.azimuths);
+    match executor::execute(&mut runtime, resolved_ast, analyzer.namespace_static_info){
         Err(error) => runtime.panic_stack_trace(error),
         _ => println!("Program executed successfully."),
     };

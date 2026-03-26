@@ -28,12 +28,21 @@ impl std::fmt::Display for LoadError {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct LoadedAzimuth {
+    pub name: Identifier,
+    pub id: u32,
+    pub flags: AzimuthFlags,
+    pub kind: ShapeExpression,
+    pub default_value: Option<Expression>,
+}
+
 pub type Filename = String;
 
 #[derive(Debug, Clone, Default)]
 pub enum NamespaceKind {
     #[default] Namespace,
-    Shape{parents: Vec<Identifier>, mappings: Vec<Mapping>, generics: Vec<ShapeExpression>, has_static: bool},
+    Shape{parents: Vec<Identifier>, mappings: Vec<Mapping>, generics: Vec<ShapeExpression>},
     Atlas
 }
 
@@ -48,15 +57,6 @@ pub struct Namespace {
     pub children: Vec<Namespace>,
     pub azimuths: Vec<LoadedAzimuth>,
     pub dependencies: Vec<NamespaceId>,
-}
-
-#[derive(Debug, Clone)]
-pub struct LoadedAzimuth {
-    pub name: Identifier,
-    pub id: u32,
-    pub flags: AzimuthFlags,
-    pub kind: ShapeExpression,
-    pub default_value: Option<Expression>,
 }
 
 impl Namespace {
@@ -89,6 +89,13 @@ impl Namespace {
                 None
             }
         }
+    }
+
+    pub fn has_static(&self) -> bool {
+        for azimuth in &self.azimuths {
+            if azimuth.flags.is_static { return true }
+        }
+        false
     }
 }
 
@@ -188,12 +195,11 @@ impl Loader {
                             default_value: raw.set_value.clone(),
                             flags: raw.flags.clone(),
                         }).collect(); 
-                    let has_static = azimuths.iter().any(|az| az.flags.is_static);
                     let namespace = Namespace { 
                         span,
                         name:name.clone(), 
                         id: self.next_namespace_id(), 
-                        kind:NamespaceKind::Shape{ parents, mappings, generics, has_static }, 
+                        kind:NamespaceKind::Shape{ parents, mappings, generics}, 
                         children:Vec::new(), 
                         dependencies:Vec::new(),
                         azimuths 

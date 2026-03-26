@@ -1,6 +1,6 @@
-use crate::analyzer::{LocalId, ResolvedFunctionBody};
+use crate::analyzer::{Analyzer, LocalId, ObjectInfo, ResolvedFunctionBody};
 use crate::intrinsic::IntrinsicParameters;
-use crate::{CallStackFunction, Function, FunctionParameter, MappingTo};
+use crate::{AzimuthId, CallStackFunction, Function, FunctionParameter, MappingTo};
 use crate::lexer::{Operator, Span};
 use crate::{
     Mapping, ObjectId, Number, Runtime, ShapeId, Value, ValueKind, executor,
@@ -437,7 +437,9 @@ pub fn create_range(from: i32, to: i32) -> Value {
     Value::Array(values, ValueKind::Int32)
 }
 
-pub fn execute(runtime: &mut Runtime, ast: Vec<ResolvedStatement>) -> Result<ExecFlow, RuntimeError> {
+pub fn execute(runtime: &mut Runtime, ast: Vec<ResolvedStatement>, static_info: HashMap<u32, (ObjectInfo, Vec<AzimuthId>)>) -> Result<ExecFlow, RuntimeError> {
+    runtime.init_static_instances(static_info)?;
+
     for statement in ast {
         match execute_statement(runtime, statement)? {
             ExecFlow::Normal(_) => {},

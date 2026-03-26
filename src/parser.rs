@@ -9,6 +9,7 @@ use crate::{AzimuthFlags, Function, FunctionSignature, Value, ValueKind, intrins
 
 #[derive(Debug, Clone)]
 pub enum ParseError {
+    WithStatements { statements: Vec<Statement>, error: Box<ParseError> },
     Error { span: Span, message: String },
     InvalidToken { span: Span, token: String },
     UnexpectedToken { span: Span, token: TokenKind, loc: String },
@@ -22,6 +23,9 @@ pub enum ParseError {
 impl std::fmt::Display for ParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            ParseError::WithStatements{ statements, error } => 
+                write!(f, "{:?}\n{}", statements, error),
+
             ParseError::Error { span, message } =>
                 write!(f, "{}: {}", span, message),
                 
@@ -484,27 +488,30 @@ fn parse_shape_expression(tokens: &mut PeekableTokens) -> Result<ShapeExpression
     Ok(base)
 }
 
-fn parse_function(shape: ShapeExpression, is_static: bool, intrinsic_name:Option<String>, flags: AzimuthFlags, tokens: &mut PeekableTokens) -> Result<RawFunction, ParseError> {
+fn parse_function(shape: Option<ShapeExpression>, intrinsic_name:Option<String>, flags: AzimuthFlags, tokens: &mut PeekableTokens) -> Result<RawFunction, ParseError> {
     tokens.next(); // Consume LParen
 
     let mut input_types = Vec::new();
 
-    let has_self = if !is_static {
+    let has_self = match shape {
+        Some(shape) => {
+            // Add self param
+            let self_param = RawFunctionParam{value_type: shape, identifier:format!("self")};
+            input_types.push(self_param);
+
+            true
+        }
+        None => false,
+    };
+    // else if matches!(tokens.peek().unwrap().kind, TokenKind::Keyword(Keyword::PSelf)){
+    //    tokens.next(); // Consume self keyword
+//
         // Add self param
-        let self_param = RawFunctionParam{value_type: shape, identifier:format!("self")};
-        input_types.push(self_param);
-
-        true
-
-    } else if matches!(tokens.peek().unwrap().kind, TokenKind::Keyword(Keyword::PSelf)){
-        tokens.next(); // Consume self keyword
-
-        // Add self param
-        let self_param = RawFunctionParam{value_type: shape, identifier:format!("self")};
-        input_types.push(self_param);
-
-        true
-    } else { false };
+    //    let self_param = RawFunctionParam{value_type: shape, identifier:format!("self")};
+    //    input_types.push(self_param);
+//
+    //    true
+    //} else { false };
 
     while let Some(token) = tokens.peek() {
         let span = token.span.clone();
@@ -786,19 +793,19 @@ fn parse_object_statement(span:Span, tokens: &mut PeekableTokens) -> Result<Stat
     }
 }
 
-fn parse_azimuth(shape_identifier: Identifier, tokens: &mut PeekableTokens) -> Result<(RawAzimuth, Span), ParseError> {
-    // Intrinsic
-    let is_intrinsic = match tokens.peek().unwrap().kind {
-        TokenKind::Keyword(Keyword::Intrinsic) => {
+fn parse_azimuth(shape_identifier: Option<Identifier>, tokens: &mut PeekableTokens) -> Result<(RawAzimuth, Span), ParseError> {
+    // Static
+    let is_static = match tokens.peek().unwrap().kind {
+        TokenKind::Keyword(Keyword::Static) => {
             tokens.next();
             true
         }
         _ => false
     };
-
-    // Static
-    let is_static = match tokens.peek().unwrap().kind {
-        TokenKind::Keyword(Keyword::Static) => {
+    
+    // Intrinsic
+    let is_intrinsic = match tokens.peek().unwrap().kind {
+        TokenKind::Keyword(Keyword::Intrinsic) => {
             tokens.next();
             true
         }
@@ -842,7 +849,10 @@ fn parse_azimuth(shape_identifier: Identifier, tokens: &mut PeekableTokens) -> R
 
     // Intrinsic name
     let intrinsic_name = if is_intrinsic {
-        Some(format!("{}::{}", shape_identifier, slot_name.clone()))
+        match shape_identifier.clone() {
+            Some(name) => Some(format!("{}::{}", name, slot_name.clone())),
+            _ => Some(format!("{}", slot_name.clone())),
+        }
     } else { None };
 
     // Function check
@@ -851,7 +861,11 @@ fn parse_azimuth(shape_identifier: Identifier, tokens: &mut PeekableTokens) -> R
         let flags = crate::AzimuthFlags { is_static:true, is_abstract, is_const, is_locked };
 
         // Function
-        let func = parse_function(ShapeExpression::Shape(span.clone(), shape_identifier.clone()), is_static, intrinsic_name, flags.clone(), tokens)?;
+        let shape_expr = match shape_identifier {
+            Some(name) if !is_static => Some(ShapeExpression::Shape(span.clone(), name.clone())),
+            _ => None,
+        };
+        let func = parse_function(shape_expr, intrinsic_name, flags.clone(), tokens)?;
         
         // Signature
         let sig_input_types = func.input_types.iter().map(|i| i.value_type.clone()).collect();
@@ -1029,7 +1043,7 @@ fn parse_statement(tokens: &mut PeekableTokens) -> Result<Statement, ParseError>
                         break;
                     }
 
-                    let (azimuth, _) = parse_azimuth(shape_identifier.clone(), tokens)?;
+                    let (azimuth, _) = parse_azimuth(Some(shape_identifier.clone()), tokens)?;
                     slot_ids.push(azimuth);
                 }
             } else {
@@ -1041,9 +1055,41 @@ fn parse_statement(tokens: &mut PeekableTokens) -> Result<Statement, ParseError>
 
         // Azimuth declaration within namespace
         TokenKind::Keyword(Keyword::Static) => {
-            let (azimuth, span) = parse_azimuth(format!(""), tokens)?;
+            let (azimuth, span) = parse_azimuth(None, tokens)?;
             Ok(Statement::DeclareAzimuth{ span, azimuth })
         }
+
+        // Namespace
+        TokenKind::Keyword(Keyword::Namespace) => {
+            tokens.next(); // Consume keyword
+
+            let name = match next(tokens, format!("namespace declaration"))?.kind {
+                TokenKind::Identifier(name) => name.clone(),
+                token => return Err(ParseError::IncorrectToken { span, token, expected: format!("namespace identifier"), loc:format!("namespace declaration") }),
+            };
+
+            let brace = next(tokens, format!("namespace declaration"))?;
+            match brace.kind {
+                TokenKind::LeftBrace => {},
+                other => return Err(ParseError::IncorrectToken { span:brace.span, token:other, expected: format!("{{"), loc:format!("namespace declaration") }),
+            }
+            let mut statements = Vec::new();
+            while let Some(token) = tokens.peek() {
+                match token.kind {
+                    TokenKind::RightBrace => {
+                        tokens.next(); // Consume brace
+                        break
+                    }
+                    TokenKind::EOF => { return Err(ParseError::IncorrectToken { span:token.span.clone(), token:token.kind.clone(), expected:format!("}}"), loc:format!("namespace content") }); }
+                    _ => statements.push(match parse_statement(tokens) {
+                        Ok(statement) => statement,
+                        Err(err) => return Err(ParseError::WithStatements{statements, error:Box::new(err)}),
+                    })
+                }
+            }
+
+            Ok(Statement::Namespace{span, name, content:statements})
+        },
 
         // Object declaration
         TokenKind::Keyword(Keyword::Let) => {
@@ -1103,35 +1149,14 @@ fn parse_statement(tokens: &mut PeekableTokens) -> Result<Statement, ParseError>
                         break
                     }
                     TokenKind::EOF => { return Err(ParseError::IncorrectToken { span, token:token.kind.clone(), expected:format!("}}"), loc:format!("block") }); }
-                    _ => statements.push(parse_statement(tokens)?)
+                    _ => statements.push(match parse_statement(tokens) {
+                        Ok(statement) => statement,
+                        Err(err) => return Err(ParseError::WithStatements{statements, error:Box::new(err)}),
+                    })
                 }
             }
 
             Ok(Statement::Block(statements))
-        },
-
-        // Namespace
-        TokenKind::Keyword(Keyword::Namespace) => {
-            tokens.next(); // Consume keyword
-
-            let name = match next(tokens, format!("namespace declaration"))?.kind {
-                TokenKind::Identifier(name) => name.clone(),
-                token => return Err(ParseError::IncorrectToken { span, token, expected: format!("namespace identifier"), loc:format!("namespace declaration") }),
-            };
-
-            let mut statements = Vec::new();
-            while let Some(token) = tokens.peek() {
-                match token.kind {
-                    TokenKind::RightBrace => {
-                        tokens.next(); // Consume brace
-                        break
-                    }
-                    TokenKind::EOF => { return Err(ParseError::IncorrectToken { span, token:token.kind.clone(), expected:format!("}}"), loc:format!("namespace content") }); }
-                    _ => statements.push(parse_statement(tokens)?)
-                }
-            }
-
-            Ok(Statement::Namespace{span, name, content:statements})
         },
 
         // If
@@ -1373,7 +1398,10 @@ pub fn parse(input: Vec<Token>) -> Result<Vec<Statement>, ParseError> {
     while let Some(token) = tokens.peek() {
         match token.kind {
             TokenKind::EOF => break,
-            _ => statements.push(parse_statement(&mut tokens)?)
+            _ => statements.push(match parse_statement(&mut tokens) {
+                Ok(statement) => statement,
+                Err(err) => return Err(ParseError::WithStatements{statements, error:Box::new(err)}),
+            })
         }
     }
     

@@ -105,11 +105,11 @@ pub fn lookup(span: Span, name: String) -> Result<IntrinsicOp, ParseError> {
         "Array::Append" => Ok(array_append),
         "Array::Add" => Ok(array_insert),
         "Array::Remove" => Ok(array_remove),
-        "Math::Sqrt" => Ok(math_sqrt),
-        "IO::Args" => Ok(io_args),
-        "IO::ReadLine" => Ok(io_readline),
-        "Random::Int" => Ok(random_int),
-        "Random::Range" => Ok(random_range),
+        "Sqrt" => Ok(math_sqrt),
+        "Args" => Ok(io_args),
+        "ReadLine" => Ok(io_readline),
+        "Int" => Ok(random_int),
+        "Range" => Ok(random_range),
 
         other => Err(ParseError::Error{span, message:format!("No intrinsic operation defined for {}", other)})
     }

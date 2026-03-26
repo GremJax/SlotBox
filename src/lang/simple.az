@@ -24,6 +24,9 @@ shape EternalNesting {
 }
 
 static Bob int32 = 5
+static Explode() -> bool {
+    return "NUKE" == "HELLO"
+}
 
 let testObject := TestShape
 print testObject.TestValue
@@ -34,7 +37,6 @@ let secondObject := TestShapeChild
 secondObject.TestValue = 10
 print secondObject
 secondObject.TestFunction(5)
-
 
 let depth = 0
 let root := EternalNesting
@@ -49,3 +51,6 @@ loop {
 
     print "Depth: \{depth}\n\{root.Layers()}"
 }
+
+print Bob
+print Explode()

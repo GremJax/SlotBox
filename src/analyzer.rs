@@ -10,6 +10,7 @@ pub enum CompileError {
     UndefinedSymbol { span: Span, name: String },
     UndefinedStatic { span: Span, name: String },
     DuplicateSymbol { span: Span, name: String },
+    AmbiguousCall { span: Span, found: Vec<NamespaceId> },
     ExpectedBoolCondition { span: Span, found: ValueKind },
     TypeMismatch { span: Span, expected: ValueKind, found: ValueKind, loc: String },
     IncorrectReturn { span: Span, expected: ValueKind, found: ValueKind },
@@ -33,6 +34,9 @@ impl std::fmt::Display for CompileError {
 
             CompileError::ExpectedBoolCondition { span, found } =>
                 write!(f, "{}: Expected bool condition, got {:?}", span, found),
+
+            CompileError::AmbiguousCall { span, found } =>
+                write!(f, "{}: Ambiguous call, multiple found- {:?}", span, found),
 
             CompileError::TypeMismatch { span, expected, found, loc } =>
                 write!(f, "{}: Type mismatch: expected {:?} for {}, got {:?}", span, expected, loc, found),
@@ -472,7 +476,7 @@ pub struct Analyzer{
     pub scopes: Vec<Scope>,
     pub loader: Loader,
     pub namespace_scopes: HashMap<u32, ScopeId>,
-    pub namespace_static_info: HashMap<u32, ObjectInfo>,
+    pub namespace_static_info: HashMap<u32, (ObjectInfo, Vec<AzimuthId>)>,
 
     pub azimuths: HashMap<u32, AzimuthInfo>,
     pub shapes: HashMap<u32, ShapeInfo>,
@@ -584,7 +588,7 @@ impl Analyzer {
             return None 
         }
         if namespaces.len() > 1 {
-            //return Err(CompileError::AmbiguousShape{span, namespaces})
+           // return Err(CompileError::AmbiguousCall{span, found:namespaces.map(|(id, _)| id).collect()})
         }
         let (namespace_id, namespace) = &namespaces[0];
 
@@ -688,30 +692,37 @@ impl Analyzer {
                     Some(Symbol::Local(info)) => Ok(ResolvedExpression::Variable(span, Symbol::Local(info.clone()))),
                     _ => {
                         println!("Not object or local, must be shape");
-                        match self.get_shape(scope, k.clone()) {
-                            Some(info) => { match &info.static_id {
-                                Some(info) => Ok(ResolvedExpression::Variable(span, Symbol::Object(*info.clone()))),
+                        let found = self.loader.get_namespaces_matching(k.clone(), self.get_using(scope));
+
+                        if found.len() == 1 {
+
+                            match &self.namespace_static_info.get(&found[0].1.id) {
+                                Some((info, _)) => Ok(ResolvedExpression::Variable(span, Symbol::Object(info.clone()))),
                                 None => Err(CompileError::Error { span, message: format!("Shape {} does not have static instance", k) })
-                            }}
-                            _ => {
-                                println!("Not object, local, or shape, must be namespace azimuth");
-                                match self.get_azimuth(scope, k.clone()) {
-                                    Some(info) => { 
+                            }
 
-                                        let static_info = match self.namespace_static_info.get(&info.shape_id) {
-                                            Some(info) => info,
-                                            None => return Err(CompileError::UndefinedSymbol { span, name: k })
-                                        };
+                        } else if found.len() > 1 {
+                            
+                            return Err(CompileError::AmbiguousCall{span, found:found.into_iter().map(|(id, _)| id).collect()})
 
-                                        Ok(ResolvedExpression::MemberAccess{
-                                            span:span.clone(), 
-                                            target: Box::new(ResolvedExpression::Variable(span, Symbol::Object(static_info.clone()))), 
-                                            member:info.clone(), 
-                                            optional:false, chained:false
-                                        })
-                                    }
-                                    _ => Err(CompileError::UndefinedSymbol { span, name: k })
+                        } else {
+                            println!("Not object, local, or shape, must be namespace azimuth");
+                            match self.get_azimuth(scope, k.clone()) {
+                                Some(info) => { 
+
+                                    let (static_info, _) = match self.namespace_static_info.get(&info.shape_id) {
+                                        Some(info) => info,
+                                        None => return Err(CompileError::UndefinedSymbol { span, name: k })
+                                    };
+
+                                    Ok(ResolvedExpression::MemberAccess{
+                                        span:span.clone(), 
+                                        target: Box::new(ResolvedExpression::Variable(span, Symbol::Object(static_info.clone()))), 
+                                        member:info.clone(), 
+                                        optional:false, chained:false
+                                    })
                                 }
+                                _ => Err(CompileError::UndefinedSymbol { span, name: k })
                             }
                         }
                     }
@@ -1008,17 +1019,17 @@ impl Analyzer {
     pub fn resolve_statement(&mut self, statement:Statement, scope:ScopeId) -> Result<ResolvedStatement,CompileError> {
         match statement {
             Statement::Expression {span, expr} => Ok(ResolvedStatement::Expression{span, expr:self.resolve_expression(expr, scope)?}),
-            Statement::Using { span, package } => {
-                self.get_scope_mut(scope).using.push(package.clone());
-                Ok(ResolvedStatement::Using{ span, package })
+            
+            Statement::Using { .. } => {
+                Ok(ResolvedStatement::Block(Vec::new()))
             }
-            Statement::Namespace{ span, name, content } => {
+            Statement::Namespace{ .. } => {
                 Ok(ResolvedStatement::Block(Vec::new()))
             },
-            Statement::DeclareAzimuth{ span, azimuth } => {
+            Statement::DeclareAzimuth{ .. } => {
                 Ok(ResolvedStatement::Block(Vec::new()))
             },
-            Statement::DeclareShape { span, name, slot_ids, parents, mappings, generics } => {
+            Statement::DeclareShape { .. } => {
                 Ok(ResolvedStatement::Block(Vec::new()))
             }
 
@@ -1282,10 +1293,19 @@ impl Analyzer {
     fn resolve_namespace_shapes(&mut self, namespace: &Namespace, scope: ScopeId) -> Result<(), CompileError> {
         let span = namespace.span.clone();
 
-        
+        // Static singleton
+        if namespace.has_static() {
+            let info = self.declare_object(
+                scope, 
+                format!("{}::Static", namespace.name), 
+                ResolvedShapeExpression::Primitive(span.clone(), ValueKind::Shape(OBJECT_INSTANCE))
+            ).0;
+            let azimuths = namespace.azimuths.iter().map(|az| az.id).collect();
+            self.namespace_static_info.insert(namespace.id, (info.clone(), azimuths));
+        }
 
         match &namespace.kind {
-            NamespaceKind::Shape{ generics, mappings, parents, has_static } => {
+            NamespaceKind::Shape{ generics, mappings, parents } => {
                 let shape_scope = *self.namespace_scopes.get(&namespace.id).unwrap_or(&scope);
 
                 // Generics
@@ -1311,30 +1331,23 @@ impl Analyzer {
                     resolved_mappings.push(self.resolve_mapping(span.clone(), mapping.clone(), shape_scope)?);
                 }
 
-                // Static singleton
-                let static_info = if *has_static {
-                    let info = self.declare_object(
-                        scope, 
-                        format!("{}::Static", namespace.name), 
-                        ResolvedShapeExpression::Primitive(span.clone(), ValueKind::Shape(OBJECT_INSTANCE))
-                    ).0;
-                    self.namespace_static_info.insert(namespace.id, info.clone());
-                    Some(Box::new(info))
-                } else { None };
-
                 // Set info
                 match self.shapes.get_mut(&namespace.id) {
                     None => return Err(CompileError::Error{span, message: format!("Dead azimuth: {}", namespace.id)}),
                     Some(info) => {
                         info.generics = resolved_generics;
                         info.mappings = resolved_mappings;
-                        info.static_id = static_info;
+                        info.static_id = match self.namespace_static_info.get(&namespace.id) {
+                            None => None,
+                            Some((info, _)) => Some(Box::new(info.clone()))
+                        };
                         info.parent_ids = parent_ids;
                     }
                 }
             }
             _ => {}
         }
+
         let scope = *self.namespace_scopes.get(&namespace.id).unwrap_or(&scope);
         for child in &namespace.children {
             self.resolve_namespace_shapes(child, scope)?;

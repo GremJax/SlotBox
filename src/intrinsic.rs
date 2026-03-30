@@ -1,4 +1,4 @@
-use std::{env, io};
+use std::{env, io, string};
 use rand::Rng;
 
 use crate::{Number, Runtime, Value, ValueKind, analyzer::AzimuthInfo, executor::RuntimeError, lexer::Span, parser::{Expression, ParseError, ShapeExpression, Statement}};
@@ -100,6 +100,30 @@ fn random_range(input: IntrinsicParameters) -> Result<Value, RuntimeError> {
     }
 }
 
+fn string_upper(input: IntrinsicParameters) -> Result<Value, RuntimeError> {
+    let val = &input.args[0];
+    match val {
+        Value::String(string) => Ok(Value::String(string.to_uppercase())),
+        other => Err(RuntimeError::TypeMismatch{span:input.span, found:other.clone(), expected: ValueKind::String })
+    }
+}
+
+fn string_lower(input: IntrinsicParameters) -> Result<Value, RuntimeError> {
+    let val = &input.args[0];
+    match val {
+        Value::String(string) => Ok(Value::String(string.to_lowercase())),
+        other => Err(RuntimeError::TypeMismatch{span:input.span, found:other.clone(), expected: ValueKind::String })
+    }
+}
+
+fn string_trim(input: IntrinsicParameters) -> Result<Value, RuntimeError> {
+    let val = &input.args[0];
+    match val {
+        Value::String(string) => Ok(Value::String(string.trim().to_string())),
+        other => Err(RuntimeError::TypeMismatch{span:input.span, found:other.clone(), expected: ValueKind::String })
+    }
+}
+
 pub fn lookup(span: Span, name: String) -> Result<IntrinsicOp, ParseError> {
     match name.as_str() {
         "Array::Append" => Ok(array_append),
@@ -110,6 +134,9 @@ pub fn lookup(span: Span, name: String) -> Result<IntrinsicOp, ParseError> {
         "ReadLine" => Ok(io_readline),
         "Int" => Ok(random_int),
         "Range" => Ok(random_range),
+        "String::Upper" => Ok(string_upper),
+        "String::Lower" => Ok(string_lower),
+        "String::Trim" => Ok(string_trim),
 
         other => Err(ParseError::Error{span, message:format!("No intrinsic operation defined for {}", other)})
     }

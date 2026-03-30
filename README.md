@@ -11,6 +11,55 @@ Each shape has a number of default mappings, functions, and slots which act as v
 
 ## Syntax
 
+### Atlas
+
+The atlas file is where your project is defined and organized. It contains the dependencies for your project and its exports.
+In the root directory of your project, the compiler expects a file called "atlas.atls" to be the root of your project.
+Atlas syntax looks like this:
+
+    dependencies {
+        std -> lang/std/atlas.atls
+        foo -> https://github.com/foo/atlas.atls
+    }
+    chart MyProgram {
+        Main        -> main.az
+    }
+
+The "chart" section is where you define your modules. The identifier following the word "chart" is the name of your project.
+The compiler will load all of the files according to their dependencies, and execute them one at a time in the specified order.
+Namespaces can be defined by file, by namespace definition within a file, or by entire directory.
+Other atlases can be linked as sub-namespaces of the super one.
+
+    chart MyProgram {
+        Main        -> main.az              // File
+        SomeUtil    -> utils.az::SomeUtil   // Interior Namespace
+        Rendering   -> src/rendering        // Directory
+        Physics     -> physics/physics.atls // Atlas
+    }
+
+All shapes and static azimuths within an atlas-defined namespace can be accessed with the "using" keyword within another namespace. All namespaces necessarily use themself and all parent namespaces as well. Namespaces within other namespaces are accessed with double colons.
+
+    namespace SomeUtil {
+        using std::Math
+
+        print Sum(5, 10)
+    }
+
+All defined namespaces are public externally. The "hidden" keyword makes namespaces only public within their own atlas.
+
+    chart MyProgram {
+        Main    -> main.az
+        hidden Secrets -> secrets.az
+    }
+
+The "trailhead" keyword defines an entry point to the program without running the entire thing. The namespace's identifier must be used intead of the program's when running from a trailhead. There is an argument handler in the std to help with this.
+
+    chart MyProgram {
+        trailhead API       -> api.az
+        trailhead Structure -> structure.az
+        hidden backend      -> backend.az
+    }
+
 ### Statements
 
 The azimuth language features similar syntax to Rust, Swift, and other modern languages, with several notable differences. All statements can be contained in blocks or not, and all expressions can be contained in parenthesis or not: it is up to the developer when clarity is more important than space. Semicolons are not mandatory, whitespace is not significant, and braces are only required where nested statements would become ambiguous.
@@ -177,7 +226,7 @@ Comparisons are also routine. For the boolean operators, the word or symbol may 
     x <= y
     x >= y
 
-Ranges are defined with elipses, "..." for end inclusive and "..<" for end exclusive
+Ranges are defined with elipses, "..." for end inclusive and "..<" for end exclusive. This works in positive and negative directions.
 
     x ... y
     x ..< y

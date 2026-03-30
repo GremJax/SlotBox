@@ -40,9 +40,12 @@ pub enum ValueKind {
 }
 
 impl ValueKind {
-    fn is_assignable_from(&self, other: ValueKind) -> bool {
-        let other = match other {
-            ValueKind::Option(kind) => *kind,
+    fn is_assignable_from(&self, other_raw: ValueKind) -> bool {
+        let other = match other_raw {
+            ValueKind::Option(kind) => {
+                if matches!(self, ValueKind::None) { return true }
+                *kind
+            }
             kind => kind
         };
         match self {
@@ -1050,6 +1053,21 @@ impl Runtime {
     fn unseal(&mut self, object_id: ObjectId) {
         let object = self.get_object_mut(object_id);
         object.flags.sealed = false;
+    }
+
+    fn get_intrinsic_static_id(&self, kind: ValueKind) -> Option<ObjectId> {
+        for shape in self.shapes.values() {
+            if shape.name == match kind {
+                ValueKind::Int32 => "Int32",
+                ValueKind::Bool => "Bool",
+                ValueKind::String => "String",
+                ValueKind::Array(_) => "Array",
+                _ => todo!()
+            } {
+                return Some(shape.id)
+            }
+        }
+        None
     }
 
     fn print_object(&self, object_id: ObjectId) {

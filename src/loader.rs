@@ -1,6 +1,6 @@
 use std::{collections::HashMap, fs};
 
-use crate::{AzimuthFlags, FunctionSignature, ValueKind, analyzer::{ResolvedExpression, ResolvedShapeExpression, ShapeInfo}, lexer::{self, Span}, parser::{self, Expression, Identifier, Mapping, ParseError, ParsedAtlas, ShapeExpression, Statement}};
+use crate::{AzimuthFlags, lexer::{self, Span}, parser::{self, Expression, Identifier, Mapping, ParseError, ParsedAtlas, ShapeExpression, Statement}};
 
 #[derive(Debug, Clone)]
 pub enum LoadError {
@@ -257,18 +257,14 @@ impl Loader {
         if location.subspace.is_some() { todo!() }
         if self.files.contains_key(&location) { return Ok(None) }
 
-        let source = match fs::read_to_string(format!("{}/{}", self.source_dir, location.url)) {
-            Err(_) => return Err(LoadError::FileNotFound{span, location:location.url}),
-            Ok(source) => source,
-        };
-        let tokens = match lexer::tokenize(&source, location.url.clone(), false) {
-            Err(error) => return Err(LoadError::LexerError{location:location.url, error}),
-            Ok(tokens) => tokens,
-        };
-        let ast = match parser::parse(tokens) {
-            Err(error) => return Err(LoadError::ParseError{location:location.url, error}),
-            Ok(ast) => ast,
-        };
+        let source = fs::read_to_string(format!("{}/{}", self.source_dir, location.url))
+            .map_err(|_| LoadError::FileNotFound{span, location:location.url.clone()})?;
+
+        let tokens = lexer::tokenize(&source, location.url.clone(), false)
+            .map_err(|error| LoadError::LexerError{location:location.url.clone(), error})?;
+
+        let ast = parser::parse(tokens)
+            .map_err(|error| LoadError::ParseError{location:location.url.clone(), error})?;
 
         Ok(Some(ast))
     }

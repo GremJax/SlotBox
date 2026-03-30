@@ -4,18 +4,18 @@ use crate::{ValueKind, parser::ParseError};
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum Operator {
-    Add, Sub, Mul, Div, Mod,
-    AddAssign, SubAssign, MulAssign, DivAssign, ModAssign, 
-    AndAssign, OrAssign, XorAssign, ShiftLAssign, ShiftRAssign,
-    Inc, Dec, Len,
-    BWAnd, BWOr, BWXor, BWNot, BWShiftL, BWShiftR,
-    Equal, NEqual, LT, GT, LTE, GTE, 
-    Not, And, Or,
-    Range, RangeLT, 
-    At, Hash, Dollar,
-    Dot, QDot, Colon, DColon, Question, DQuestion,
-    Assign, Attach, Detach, Arrow, FatArrow,
-    IsShape, NIsShape
+    Add, Sub, Mul, Div, Mod,                                        // +, -, *, /, %
+    AddAssign, SubAssign, MulAssign, DivAssign, ModAssign,          // +=, -=, *=, /=, %=
+    BWAnd, BWOr, BWXor, BWNot, BWShiftL, BWShiftR,                  // &, |, ^, ~, <<, >>
+    AndAssign, OrAssign, XorAssign, ShiftLAssign, ShiftRAssign,     // &=, |=, ^=, ~=, <<=, >>=
+    Inc, Dec, Len,                                                  // ++, --, len
+    Equal, NEqual, LT, GT, LTE, GTE,                                // ==, !=, <, >, <=, >=
+    Not, And, Or,                                                   // !, &&, ||
+    Range, RangeLT,                                                 // ..., ..<
+    At, Hash, Dollar,                                               // @, #, $
+    Dot, QDot, Colon, DColon, QDColon, Question, DQuestion, QCall,  //., ?., :, ::, ?::, ?, ??, ?(
+    Assign, Attach, Detach, Arrow, FatArrow,                        // =, :=, =:, ->, =>
+    IsShape, NIsShape                                               // =~, !~
 }
 
 pub const UNARY_OPERATORS: &[Operator] = &[ 
@@ -210,22 +210,22 @@ impl Lexer {
             match ch {
                 '"' => break,
                 '\\' => {
-                    self.column += 1;
-                    match chars.next().unwrap() {
-                        '\\' | ' ' => string.push('\\'),
-                        'n' => string.push('\n'),
-                        't' => string.push('\t'),
-                        'r' => string.push('\r'),
-                        '"' => string.push('\"'),
-                        //'\'' => string.push('\''),
+                    match chars.peek().unwrap() {
+                        // Escape characters
+                        'n' => { string.push('\n'); self.column += 1; chars.next(); }
+                        't' => { string.push('\t'); self.column += 1; chars.next(); }
+                        'r' => { string.push('\r'); self.column += 1; chars.next(); }
+                        '"' => { string.push('\"'); self.column += 1; chars.next(); }
+                        '0' => { string.push('\0'); self.column += 1; chars.next(); }
 
                         // String format
                         '{' => {
+                            self.column += 1; chars.next();
                             self.interp_stack.push(self.depth);
                             return Ok(Token{span:self.span(), kind:TokenKind::StringFormat(string)})
                         }
 
-                        other => return Err(ParseError::InvalidToken{span, token:format!("\\{}",other)})
+                        _ => string.push('\\'),
                     }
                 }
                 other => string.push(other),
@@ -283,22 +283,49 @@ impl Lexer {
         match ch {
             '0'..='9' => {
                 let span= self.span();
-                let mut number = String::new();
-                number.push(ch);
-                while let Some(&ch) = chars.peek() {
-                    if ch.is_digit(10) || ch == '.' {
-                        number.push(ch);
-                        chars.next();
-                        self.column += 1;
+                let mut digits = String::new();
+                let mut radix = 10u32;
+
+                // Check for base prefix
+                if ch == '0' {
+                    match chars.peek() {
+                        Some('x') | Some('X') => { radix = 16; chars.next(); self.column += 1; }
+                        Some('b') | Some('B') => { radix = 2;  chars.next(); self.column += 1; }
+                        Some('o') | Some('O') => { radix = 8;  chars.next(); self.column += 1; }
+                        Some('c') | Some('C') => { radix = 10; chars.next(); self.column += 1; }
+                        _ => { digits.push(ch); }
+                    }
+                } else {
+                    digits.push(ch);
+                }
+
+                // Loop through subsequent digits
+                while let Some(&c) = chars.peek() {
+                    let valid = match radix {
+                        2  => matches!(c, '0'|'1'),             // Binary
+                        8  => matches!(c, '0'..='7'),           // Octal
+                        10 => c.is_ascii_digit() || c == '.',   // Decimal
+                        16 => c.is_ascii_hexdigit(),            // Hex
+                        _  => false,
+                    };
+                    if valid || c == '_' {
+                        chars.next(); self.column += 1;
+                        if c != '_' { digits.push(c); } // Push to number
                     } else {
                         break;
                     }
                 }
-                Ok(Token{span, kind:TokenKind::Number(number.parse().unwrap())})
+
+                // Parse based on radix
+                let value = if radix == 10 {
+                    digits.parse::<f64>().map_err(|_| ParseError::InvalidToken{span:span.clone(), token:digits})?
+                } else {
+                    i64::from_str_radix(&digits, radix).map_err(|_| ParseError::InvalidToken{span:span.clone(), token:digits})? as f64
+                };
+
+                Ok(Token{span, kind:TokenKind::Number(value)})
             },
-            '"' => {
-                self.parse_string(chars)
-            }
+            '"' => self.parse_string(chars),
             '{' => {
                 if !self.interp_stack.is_empty() { self.depth += 1 }
                 Ok(Token{span:self.span(), kind:TokenKind::LeftBrace})
@@ -496,6 +523,12 @@ impl Lexer {
                             Operator::QDot
                         } else if self.next_is('?', chars)? {
                             Operator::DQuestion
+                        } else if self.next_is('(', chars)? {
+                            Operator::QCall
+                        } else if self.next_is(':', chars)? {
+                            if self.next_is(':', chars)? {
+                                Operator::QDColon
+                            } else { return Err(ParseError::InvalidToken{span, token:format!("?:{}",ch)}) }
                         } else { Operator::Question }
                         
                     '@' => Operator::At,

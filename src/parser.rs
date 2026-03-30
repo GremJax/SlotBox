@@ -66,6 +66,7 @@ pub enum Expression {
     Value(Span, Value),
     StringFormat(Span, Vec<Expression>),
     Array(Span, Vec<Expression>, Option<ValueKind>),
+    Range(Span, Value, Value),
     Variable(Span, Identifier),
     Option(Span, Box<Option<Expression>>),
     Shape(Span, ShapeExpression),
@@ -89,7 +90,7 @@ pub enum Expression {
     MemberAccess {
         span: Span,
         target: Box<Expression>,
-        qualifier: Option<ShapeExpression>,
+        qualifier: Option<NamespaceId>,
         member: Identifier,
         optional: bool,
         chained: bool,
@@ -205,7 +206,13 @@ pub enum Statement {
         span: Span, 
         condition: Expression,
         true_statement: Box<Statement>,
-        else_statement: Box<Option<Statement>>,
+        else_statement: Option<Box<Statement>>,
+    },
+    Switch {
+        span: Span, 
+        target: Expression,
+        branch_statements: Vec<(Expression, Statement)>,
+        else_statement: Option<Box<Statement>>,
     },
     While {
         span: Span, 
@@ -322,7 +329,7 @@ fn parse_expression(tokens: &mut PeekableTokens) -> Result<Expression, ParseErro
 
     let span = token.span.clone();
     let mut caller = Expression::Value(span, Value::None);
-    let mut qualifier = None;
+    let mut qualifier: Option<NamespaceId> = None;
 
     // Check for member access / function call / array index
     let mut chained = false;
@@ -330,9 +337,28 @@ fn parse_expression(tokens: &mut PeekableTokens) -> Result<Expression, ParseErro
         let span = token.span.clone();
 
         match token.kind {
-            TokenKind::Operator(Operator::DColon) => {
+            TokenKind::Operator(Operator::DColon) | TokenKind::Operator(Operator::QDColon) => {
                 tokens.next(); // Consume dcolon
-                qualifier = Some(parse_shape_expression(tokens)?);
+
+                // Expect namespace identifier
+                let token = tokens.next().unwrap();
+                let identifier = match token.kind {
+                    TokenKind::Identifier(identifier) => identifier,
+                    other => return Err(ParseError::IncorrectToken { span:token.span, token:other, expected: format!("namespace identifier"), loc: format!("member access qualifier") })
+                };
+
+                // Add to qualifier
+                match &mut qualifier {
+                    Some(namespace) => namespace.push(identifier),
+                    None => qualifier = Some([identifier].to_vec()),
+                }
+
+                // Expect dot or colon next
+                match &tokens.peek().unwrap().kind {
+                    TokenKind::Operator(Operator::Dot) | TokenKind::Operator(Operator::QDot) |
+                    TokenKind::Operator(Operator::DColon) | TokenKind::Operator(Operator::QDColon) => {} // Continue
+                    other => return Err(ParseError::IncorrectToken { span:token.span, token:other.clone(), expected: format!("Access or next namespace"), loc: format!("member access") })
+                }
             }
             TokenKind::Operator(Operator::Dot) | TokenKind::Operator(Operator::QDot) => {
                 let optional = matches!(token.kind, TokenKind::Operator(Operator::QDot));
@@ -347,7 +373,10 @@ fn parse_expression(tokens: &mut PeekableTokens) -> Result<Expression, ParseErro
                     qualifier = None;
                 }
             }
-            TokenKind::LeftParen => {
+            TokenKind::LeftParen | TokenKind::Operator(Operator::QCall) => {
+                let optional = matches!(token.kind, TokenKind::Operator(Operator::QCall));
+                if optional { chained = true }
+
                 let token = tokens.next().unwrap();
                 let span = token.span.clone();
 
@@ -368,7 +397,7 @@ fn parse_expression(tokens: &mut PeekableTokens) -> Result<Expression, ParseErro
                     }
                 }
 
-                expr = Expression::FunctionCall{span, caller:Box::new(caller.clone()), target:Box::new(expr), args, optional:false, chained};
+                expr = Expression::FunctionCall{span, caller:Box::new(caller.clone()), target:Box::new(expr), args, optional, chained};
             }
             
             TokenKind::LeftBracket => {
@@ -1170,12 +1199,76 @@ fn parse_statement(tokens: &mut PeekableTokens) -> Result<Statement, ParseError>
             let else_statement = match else_token.kind {
                 TokenKind::Keyword(Keyword::Else) => {
                     tokens.next(); // Consume else
-                    Some(parse_statement(tokens)?)
+                    Some(Box::new(parse_statement(tokens)?))
                 }
                 _ => None
             };
 
-            Ok(Statement::If{ span, condition, true_statement: Box::new(true_statement), else_statement: Box::new(else_statement) })
+            Ok(Statement::If{ span, condition, true_statement: Box::new(true_statement), else_statement: else_statement })
+        },
+
+        // Switch
+        TokenKind::Keyword(Keyword::Switch) => {
+            tokens.next(); // Consume keyword
+
+            let target = parse_expression(tokens)?;
+
+            // Expect brace
+            let token = tokens.next().unwrap();
+            match token.kind {
+                TokenKind::LeftBrace => {},
+                other => return Err(ParseError::IncorrectToken { span:token.span, token:other, expected:format!("{{"), loc: format!("Switch statement") })
+            }
+
+            let mut branches = Vec::new();
+            let mut else_statement = None;
+
+            while let Some(token) = tokens.peek() {
+                match token.kind {
+                    TokenKind::RightBrace => { 
+                        tokens.next(); 
+                        break 
+                    }
+                    TokenKind::Comma => { tokens.next(); }
+                    TokenKind::Keyword(Keyword::Else) => {
+                        tokens.next();
+
+                        // Expect Arrow
+                        let token = tokens.next().unwrap();
+                        match token.kind {
+                            TokenKind::Operator(Operator::Arrow) => {},
+                            other => return Err(ParseError::IncorrectToken { span:token.span, token:other, expected:format!("->"), loc: format!("Switch statement") })
+                        }
+
+                        else_statement = Some(Box::new(parse_statement(tokens)?));
+
+                        // Expect closing brace
+                        let token = tokens.next().unwrap();
+                        match token.kind {
+                            TokenKind::RightBrace => {},
+                            other => return Err(ParseError::IncorrectToken { span:token.span, token:other, expected:format!("}}"), loc: format!("Switch statement") })
+                        }
+
+                        break
+                    }
+                    _ => {
+                        let branch_expr = parse_expression(tokens)?;
+
+                        // Expect Arrow
+                        let token = tokens.next().unwrap();
+                        match token.kind {
+                            TokenKind::Operator(Operator::Arrow) => {},
+                            other => return Err(ParseError::IncorrectToken { span:token.span, token:other, expected:format!("->"), loc: format!("Switch statement") })
+                        }
+
+                        let branch_statement = parse_statement(tokens)?;
+
+                        branches.push((branch_expr, branch_statement));
+                    }
+                }
+            }
+
+            Ok(Statement::Switch{ span, target, branch_statements:branches, else_statement })
         },
 
         // While

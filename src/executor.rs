@@ -59,7 +59,7 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
         },
         ResolvedExpression::Variable(_, Symbol::Object(k)) => Ok(Value::Object(k.id, ValueKind::Shape(OBJECT_INSTANCE))),
         ResolvedExpression::Variable(span, Symbol::Local(k)) => { 
-            println!("{:?}, toget: {}", runtime.locals, k.id);
+            //println!("{:?}, toget: {}", runtime.locals, k.id);
             match runtime.get_local(k.id) {
                 Some(val) => Ok(val.clone()),
                 None => Err(RuntimeError::Error{span, message: format!("Missing local: {:?}", k)})
@@ -244,17 +244,23 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
         }
         
         ResolvedExpression::MemberAccess{ span, target, member, optional, chained} => {
-            println!("Target: {:?}", target);
-            match evaluate(runtime, *target)? {
-                Value::Object(object_id, _) => {
-                    match runtime.get_slot_value(object_id, member.id) {
-                        Some(value) => Ok(value.clone()),
-                        None if optional => Ok(Value::None),
-                        None => Err(RuntimeError::Error{span, message:format!("Member {:?} not found for {:?}", member.name, object_id)}),
+            //println!("Target: {:?}", target);
+
+            let object_id = match evaluate(runtime, *target)? {
+                Value::Object(id, _) => id,
+                Value::None if chained => return Ok(Value::None),
+                other => {
+                    match runtime.get_intrinsic_static_id(other.kind()) {
+                        None => return Err(RuntimeError::Error{span, message:format!("Member access not permitted for {:?}.{:?}", other, member)}),
+                        Some(id) => id
                     }
                 }
-                Value::None if chained => Ok(Value::None),
-                other => Err(RuntimeError::Error{span, message:format!("Member access not permitted for {:?}.{:?}", other, member)}),
+            };
+
+            match runtime.get_slot_value(object_id, member.id) {
+                Some(value) => Ok(value.clone()),
+                None if optional => Ok(Value::None),
+                None => Err(RuntimeError::Error{span, message:format!("Member {:?} not found for {:?}", member.name, object_id)}),
             }
         },
         
@@ -615,12 +621,33 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
             match cond {
                 Value::Bool(true) => execute_statement(runtime, *true_statement),
                 Value::Bool(false) => {
-                    if let Some(statement) = *else_statement {
-                        return execute_statement(runtime, statement)
+                    if let Some(statement) = else_statement {
+                        return execute_statement(runtime, *statement)
                     }
                     Ok(ExecFlow::Normal(span))
                 }
                 other => Err(RuntimeError::Error{span, message:format!("If condition was not true or false: {:?}", other)}),
+            }
+        }
+
+        ResolvedStatement::Switch { span, target, branch_statements, else_statement } => {
+            let target = evaluate(runtime, target)?;
+
+            for (expr, statement) in branch_statements {
+                let comparison = evaluate(runtime, expr)?;
+                if target != comparison { continue }
+
+                let branch_result = execute_statement(runtime, statement)?;
+
+                match branch_result {
+                    ExecFlow::Continue(_) => continue,
+                    other => return Ok(other)
+                }
+            }
+
+            match else_statement {
+                None => Ok(ExecFlow::Normal(span)),
+                Some(statement) => execute_statement(runtime, *statement)
             }
         }
 

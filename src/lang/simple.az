@@ -23,6 +23,18 @@ shape EternalNesting {
     }
 }
 
+shape OptionalTest1 {
+    Value int32?
+}
+
+shape OptionalTest2 {
+    Test1 OptionalTest1?
+}
+
+shape OptionalTest3 {
+    Test2 OptionalTest2?
+}
+
 static Bob int32 = 5
 static Explode() -> bool {
     return "NUKE" == "HELLO"
@@ -54,3 +66,28 @@ loop {
 
 print Bob
 print Explode()
+
+let x = 5
+print x
+print x.Negate()
+print "hello".Upper()
+print 1 ... 6
+
+let test1 := OptionalTest1
+print test1.Value
+test1.Value = 6
+print test1.Value
+
+let test2 := OptionalTest2
+print test2.Test1
+print test2?.Test1.Value
+test2.Test1 = test1
+print test2?.Test1.Value
+
+let test3 := OptionalTest3
+print test3.Test2
+print test3?.Test2?.Test1?.Value ?? 100
+test3.Test2 = test2
+print test3?.Test2?.Test1?.Value ?? 100
+
+print 0xF5

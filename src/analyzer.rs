@@ -202,7 +202,13 @@ pub enum ResolvedStatement {
         span: Span, 
         condition: ResolvedExpression,
         true_statement: Box<ResolvedStatement>,
-        else_statement: Box<Option<ResolvedStatement>>,
+        else_statement: Option<Box<ResolvedStatement>>,
+    },
+    Switch {
+        span: Span, 
+        target: ResolvedExpression,
+        branch_statements: Vec<(ResolvedExpression, ResolvedStatement)>,
+        else_statement: Option<Box<ResolvedStatement>>,
     },
     While {
         span: Span, 
@@ -282,6 +288,40 @@ impl ResolvedStatement {
                 if true_status == ReturnStatus::Always && true_status == else_status {
                     Ok(ReturnStatus::Always)
                 } else if true_status == ReturnStatus::Never && true_status == else_status {
+                    Ok(ReturnStatus::Never)
+                } else {
+                    Ok(ReturnStatus::Conditionally)
+                }
+            }
+            ResolvedStatement::Switch{branch_statements, else_statement, ..} => {
+                let mut branches_status = ReturnStatus::Never;
+                let mut always_count = 0;
+
+                for (_, branch) in branch_statements {
+                    match branch.walk_returns(expected.clone())? {
+                        ReturnStatus::Always => {
+                            branches_status = ReturnStatus::Conditionally;
+                            always_count += 1;
+                        }
+                        ReturnStatus::Conditionally => {
+                            branches_status = ReturnStatus::Conditionally;
+                        }
+                        ReturnStatus::Never => {}
+                    }
+                }
+
+                if always_count == branch_statements.len() {
+                    branches_status = ReturnStatus::Always
+                }
+                
+                let else_status = match else_statement {
+                    Some(statement) => statement.walk_returns(expected)?,
+                    None => ReturnStatus::Never
+                };
+
+                if branches_status == ReturnStatus::Always && branches_status == else_status {
+                    Ok(ReturnStatus::Always)
+                } else if branches_status == ReturnStatus::Never && branches_status == else_status {
                     Ok(ReturnStatus::Never)
                 } else {
                     Ok(ReturnStatus::Conditionally)
@@ -595,21 +635,60 @@ impl Analyzer {
         return self.shapes.get(&namespace.id);
     }
 
-    pub fn get_azimuth(&self, id:ScopeId, identifier:Identifier) -> Option<&AzimuthInfo> {
-        let using = self.get_using(id);
+    pub fn get_azimuth(&self, span:&Span, id:ScopeId, identifier:Identifier, qualifier: Option<NamespaceId>, signature: Option<FunctionSignature>) -> Result<Option<&AzimuthInfo>, CompileError> {
+        let mut using = self.get_using(id);
+
+        // Attach qualifier
+        match qualifier {
+            None => {},
+            Some(namespace) => {
+                for ns in &mut using {
+                    ns.append(&mut namespace.clone());
+                }
+            }
+        }
+
         let found = self.loader.get_azimuths(identifier, using);
 
-        if found.len() <= 0 { return None }
+        if found.len() <= 0 { return Ok(None) }
+        else if found.len() > 1 {
+            match signature {
+                None => return Err(CompileError::AmbiguousCall { span:span.clone(), found: found.iter().map(|(f, _)| f.clone()).collect() }),
+                Some(signature) => {
+                    let mut matches = Vec::new(); 
+
+                    // Iter through possible functions
+                    for (path, azimuth) in &found {
+                        let test = self.azimuths.get(&azimuth.id);
+
+                        // Get info
+                        let info = match test {
+                            None => continue,
+                            Some(az) => az
+                        };
+
+                        // If function signature matches, mark it
+                        match &info.default_value {
+                            None => continue,
+                            Some(val) => {
+                                match val.kind() {
+                                    ValueKind::Function(sig) if *sig == signature => matches.push((info, path)),
+                                    _ => continue
+                                }
+                            }
+                        };
+                    }
+
+                    // Return only match
+                    if matches.len() == 1 { 
+                        return Ok(Some(matches[0].0)) 
+                    } else { return Err(CompileError::AmbiguousCall { span:span.clone(), found: matches.iter().map(|(_, f)| f.clone().clone()).collect() }) }
+                }
+            }
+        }
+        
         let azimuth = found[0].1.id;
-        // if found.len() > 1 { return Err() }
-
-        return self.azimuths.get(&azimuth);
-    }
-
-    pub fn get_azimuth_namespace(&self, id:ScopeId, namespace_id:NamespaceId) -> Option<&AzimuthInfo> {
-        let using = self.get_using(id);
-        //self.loader.get_azimuths(name, using)
-        todo!()
+        return Ok(self.azimuths.get(&azimuth));
     }
 
     fn declare_generic(&mut self, shape: &ShapeExpression, scope: ScopeId) {
@@ -672,6 +751,9 @@ impl Analyzer {
 
                 Ok(ResolvedExpression::Array(span, values, kind))
             },
+            Expression::Range(span, from, to) => {
+                todo!()
+            }
 
             Expression::StringFormat(span, expressions) => {
                 let mut resolved = Vec::new();
@@ -707,7 +789,7 @@ impl Analyzer {
 
                         } else {
                             println!("Not object, local, or shape, must be namespace azimuth");
-                            match self.get_azimuth(scope, k.clone()) {
+                            match self.get_azimuth(&span, scope, k.clone(), None, None)? {
                                 Some(info) => { 
 
                                     let (static_info, _) = match self.namespace_static_info.get(&info.shape_id) {
@@ -840,12 +922,8 @@ impl Analyzer {
 
             Expression::MemberAccess{ span, target, qualifier, member, optional, chained} => {
                 let target = self.resolve_expression(*target, scope)?;
-                let qualifier = match qualifier {
-                    Some(shape_expr) => Some(self.resolve_shape_expression(shape_expr, scope)?),
-                    None => None
-                };
 
-                if let Some(member) = self.get_azimuth(scope, member.clone()) {
+                if let Some(member) = self.get_azimuth(&span, scope, member.clone(), qualifier, None)? {
 
                     Ok(ResolvedExpression::MemberAccess{span, 
                         target:Box::new(target),
@@ -1001,11 +1079,11 @@ impl Analyzer {
     }
 
     pub fn resolve_mapping(&mut self, span:Span, mapping:Mapping, scope:ScopeId) -> Result<ResolvedMapping, CompileError> {
-        let from = if let Some(symbol) = self.get_azimuth(scope, mapping.from_slot.clone()){
+        let from = if let Some(symbol) = self.get_azimuth(&span, scope, mapping.from_slot.clone(), None, None)?{
             symbol.clone()
         } else { return Err(CompileError::UndefinedSymbol { span, name: mapping.from_slot }); };
         
-        let to = if let Some(symbol) = self.get_azimuth(scope, mapping.to_slot.clone()){
+        let to = if let Some(symbol) = self.get_azimuth(&span, scope, mapping.to_slot.clone(), None, None)?{
             symbol.clone()
         } else { return Err(CompileError::UndefinedSymbol { span, name: mapping.to_slot }); };
 
@@ -1112,6 +1190,7 @@ impl Analyzer {
 
                 Ok(ResolvedStatement::Seal{span, target})
             }
+
             Statement::If { span, condition, true_statement, else_statement } => {
                 let resolved_condition = self.resolve_expression(condition, scope)?;
                 if resolved_condition.kind() != ValueKind::Bool {
@@ -1119,12 +1198,31 @@ impl Analyzer {
                 }
 
                 let resolved_true = self.resolve_statement(*true_statement, scope)?;
-                let resolved_else = if let Some(statement) = *else_statement {
-                    Some(self.resolve_statement(statement, scope)?)
+                let resolved_else = if let Some(statement) = else_statement {
+                    Some(Box::new(self.resolve_statement(*statement, scope)?))
                 } else { None };
 
-                Ok(ResolvedStatement::If{span, condition: resolved_condition, true_statement: Box::new(resolved_true), else_statement: Box::new(resolved_else)})
+                Ok(ResolvedStatement::If{span, condition: resolved_condition, true_statement: Box::new(resolved_true), else_statement: resolved_else})
             }
+
+            Statement::Switch { span, target, branch_statements, else_statement } => {
+                let target = self.resolve_expression(target, scope)?;
+                
+                let mut resolved_branches = Vec::new();
+                for (expr, statement) in branch_statements {
+                    let resolved_expr = self.resolve_expression(expr, scope)?;
+                    let resolved_statement = self.resolve_statement(statement, scope)?;
+                    resolved_branches.push((resolved_expr, resolved_statement));
+                }
+
+                let else_statement = match else_statement {
+                    None => None,
+                    Some(statement) => Some(Box::new(self.resolve_statement(*statement, scope)?))
+                };
+
+                Ok(ResolvedStatement::Switch{span, target, branch_statements:resolved_branches, else_statement })
+            }
+
             Statement::While { span, condition, statement } => {
                 let resolved_condition = self.resolve_expression(condition, scope)?;
                 if resolved_condition.kind() != ValueKind::Bool {

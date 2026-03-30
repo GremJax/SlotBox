@@ -49,6 +49,18 @@ namespace Math {
         return (x % 2) == 0
     static IsOdd(int32 x) -> bool
         return (x % 2) != 0
+    static LT(int32 a, int32 b) -> bool
+        return a < b
+    static LTE(int32 a, int32 b) -> bool
+        return a <= b
+    static GT(int32 a, int32 b) -> bool
+        return a > b
+    static GTE(int32 a, int32 b) -> bool
+        return a >= b
+    static Eq(int32 a, int32 b) -> bool
+        return a == b
+    static NEq(int32 a, int32 b) -> bool
+        return a != b
         
     static GCD(int32 a, int32 b) -> int32 {
         while b != 0 {
@@ -128,18 +140,18 @@ shape Identified {
 shape Parent<T> {
     Children T[]
 
-    //Add(T child) {
-    //    child := Child<T>
-    //    child.Parent = self
-    //    Children.Append(child)
-    //}
+    Add(T child) {
+        child := Child<T>
+        child.Parent = self
+        Children.Append(child)
+    }
 }
 
 shape Child<T> {
     Parent T
 
     //Root() -> T 
-    //    self.Parent::Child<T>?.Parent ?? self
+        //self.Parent::Child<T>?.Parent ?? self
 }
 
 shape Linked<T> {
@@ -179,6 +191,28 @@ shape Int32 {
     static const MIN int32 = -2147483648
 
     Negate() -> int32 return -self
+}
+
+shape Bool {
+    static Parse(string input) -> bool?
+        switch input.Lower().Trim() {
+            "true" -> return true
+            "false" -> return false
+            else -> return null
+        }
+
+    static FromBinary(int32 input) -> bool?
+        switch input {
+            1 -> return true
+            0 -> return false
+            else -> return null
+        }
+}
+
+shape String {
+    intrinsic Upper() -> string
+    intrinsic Lower() -> string
+    intrinsic Trim() -> string
 }
 
 shape Point {

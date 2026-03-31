@@ -47,6 +47,15 @@ shape FunctionRemap2 {
     }
 }
 
+shape LongFunc {
+    DoFunc() {
+        for i in 0 ... 100000 {
+            let x = 55368
+            x /= i
+        }
+    }
+}
+
 static Bob int32 = 5
 static Explode() -> bool {
     return "NUKE" == "HELLO"
@@ -118,3 +127,13 @@ funcRemap.DoSomethingElse()
 
 funcRemap =: FunctionRemap
 print funcRemap
+
+let test := LongFunc
+print test
+test := Benchmarking (
+    Start -> before DoFunc
+    Stop -> after DoFunc
+)
+print test
+test.DoFunc()
+print test

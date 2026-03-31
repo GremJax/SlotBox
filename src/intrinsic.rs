@@ -1,7 +1,7 @@
-use std::{env, io, string};
+use std::{env, io, string, time::{SystemTime, UNIX_EPOCH}};
 use rand::Rng;
 
-use crate::{Number, Runtime, Value, ValueKind, analyzer::AzimuthInfo, executor::RuntimeError, lexer::Span, parser::{Expression, ParseError, ShapeExpression, Statement}};
+use crate::{NumKind, Number, Runtime, Value, ValueKind, analyzer::AzimuthInfo, executor::RuntimeError, lexer::Span, parser::{Expression, ParseError, ShapeExpression, Statement}};
 
 pub struct IntrinsicParameters<'a> {
     pub span: Span,
@@ -58,7 +58,7 @@ fn math_sqrt(input: IntrinsicParameters) -> Result<Value, RuntimeError> {
     match operand {
         //Value::Number(Number::Int32(val)) => sqrt()
 
-        other => Err(RuntimeError::TypeMismatch{span:input.span, found: other.clone(), expected: ValueKind::Number }),
+        other => Err(RuntimeError::TypeMismatch{span:input.span, found: other.clone(), expected: ValueKind::Number(NumKind::Any) }),
     }
 }
 
@@ -96,7 +96,7 @@ fn random_range(input: IntrinsicParameters) -> Result<Value, RuntimeError> {
             let random: i32 = rng.gen_range(from.to_i32()..=to.to_i32());
             Ok(random.into())
         }
-        _ => Err(RuntimeError::TypeMismatch{span:input.span, found: to.clone(), expected: ValueKind::Number })
+        _ => Err(RuntimeError::TypeMismatch{span:input.span, found: to.clone(), expected: ValueKind::Number(NumKind::Any) })
     }
 }
 
@@ -124,6 +124,15 @@ fn string_trim(input: IntrinsicParameters) -> Result<Value, RuntimeError> {
     }
 }
 
+fn benchmarking_get_time(input: IntrinsicParameters) -> Result<Value, RuntimeError> {
+    let now = SystemTime::now();
+    let duration_since_epoch = now
+        .duration_since(UNIX_EPOCH)
+        .expect("SystemTime went backwards");
+    let seconds: u64 = duration_since_epoch.as_millis().try_into().expect(format!("Millis to big: {:?}", duration_since_epoch).as_str());
+    Ok(Value::Number(Number::UInt64(seconds)))
+}
+
 pub fn lookup(span: Span, name: String) -> Result<IntrinsicOp, ParseError> {
     match name.as_str() {
         "Array::Append" => Ok(array_append),
@@ -137,6 +146,7 @@ pub fn lookup(span: Span, name: String) -> Result<IntrinsicOp, ParseError> {
         "String::Upper" => Ok(string_upper),
         "String::Lower" => Ok(string_lower),
         "String::Trim" => Ok(string_trim),
+        "Benchmarking::GetTime" => Ok(benchmarking_get_time),
 
         other => Err(ParseError::Error{span, message:format!("No intrinsic operation defined for {}", other)})
     }

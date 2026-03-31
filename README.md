@@ -235,6 +235,13 @@ Ternaries are also supported
 
     print (x == y) ? someThing : someThingElse
 
+Numbers can be written with various prefixes.
+
+    0xFF        // Hex
+    0o778       // Octal
+    0b1100_1111 // Binary
+    0c100       // Decimal (default)
+
 ### Shapes
 
 Shapes are defined anywhere within a file and contain a number of azimuth and function definitions.

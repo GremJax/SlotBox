@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::{ValueKind, parser::ParseError};
+use crate::{NumKind, ValueKind, parser::ParseError};
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum Operator {
@@ -46,7 +46,7 @@ impl Operator {
             Operator::Mul | Operator::Div | Operator::Sub | Operator::Mod |
             Operator::BWAnd | Operator::BWOr | Operator::BWXor | Operator::BWNot | Operator::BWShiftL | Operator::BWShiftR |
             Operator::Inc | Operator::Dec | Operator::Len
-                => ValueKind::Int32,
+                => ValueKind::Number(NumKind::Any),
 
             Operator::Add => operand,
                 
@@ -56,7 +56,7 @@ impl Operator {
                 => ValueKind::Bool,
                 
             Operator::Range | Operator::RangeLT
-                => ValueKind::Array(Box::new(ValueKind::Int32)),
+                => ValueKind::Array(Box::new(ValueKind::Number(NumKind::Int32))),
 
             Operator::DQuestion => match operand {
                 ValueKind::Option(kind) => *kind,
@@ -76,10 +76,10 @@ pub enum Keyword {
     Lazy, Hidden, Trailhead,
 
     // Definitions
-    Shape, Let,
+    Shape, Let, Enum,
     Static, Seal, Locked, Const, Abstract, Intrinsic,
     Before, After, Next,
-    Func, PSelf, Attach, Detach,
+    PSelf, Attach, Detach,
 
     // Statements
     If, Else, Switch,
@@ -368,11 +368,12 @@ impl Lexer {
                     "namespace" => TokenKind::Keyword(Keyword::Namespace),
                     "using" => TokenKind::Keyword(Keyword::Using),
                     "shape" => TokenKind::Keyword(Keyword::Shape),
+                    "enum" => TokenKind::Keyword(Keyword::Enum),
                     "let" => TokenKind::Keyword(Keyword::Let),
                     "static" => TokenKind::Keyword(Keyword::Static),
                     "attach" => TokenKind::Keyword(Keyword::Attach),
                     "detach" => TokenKind::Keyword(Keyword::Detach),
-                    "func" => TokenKind::Keyword(Keyword::Func),
+                    //"func" => TokenKind::Keyword(Keyword::Func),
                     "self" => TokenKind::Keyword(Keyword::PSelf),
                     "seal" => TokenKind::Keyword(Keyword::Seal),
                     "locked" => TokenKind::Keyword(Keyword::Locked),
@@ -400,37 +401,37 @@ impl Lexer {
                     "and" => TokenKind::Operator(Operator::And),
                     "or" => TokenKind::Operator(Operator::Or),
 
-                    "number" => TokenKind::Type(ValueKind::Number),
+                    "number" => TokenKind::Type(ValueKind::Number(NumKind::Any)),
 
-                    //"int8" => TokenKind::Type(ValueKind::Int8),
-                    //"byte" => TokenKind::Type(ValueKind::Int8),
+                    "int8" => TokenKind::Type(ValueKind::Number(NumKind::Int8)),
+                    "byte" => TokenKind::Type(ValueKind::Number(NumKind::Int8)),
 
-                    //"int16" => TokenKind::Type(ValueKind::Int16),
-                    //"short" => TokenKind::Type(ValueKind::Int16),
+                    "int16" => TokenKind::Type(ValueKind::Number(NumKind::Int16)),
+                    "short" => TokenKind::Type(ValueKind::Number(NumKind::Int16)),
 
-                    "int32" => TokenKind::Type(ValueKind::Int32),
-                    "int" => TokenKind::Type(ValueKind::Int32),
+                    "int32" => TokenKind::Type(ValueKind::Number(NumKind::Int32)),
+                    "int" => TokenKind::Type(ValueKind::Number(NumKind::Int32)),
 
-                    //"int64" => TokenKind::Type(ValueKind::Int64),
-                    //"long" => TokenKind::Type(ValueKind::Int64),
+                    "int64" => TokenKind::Type(ValueKind::Number(NumKind::Int64)),
+                    "long" => TokenKind::Type(ValueKind::Number(NumKind::Int64)),
 
-                    "uint8" => TokenKind::Type(ValueKind::Int32),
-                    "ubyte" => TokenKind::Type(ValueKind::UInt8),
+                    "uint8" => TokenKind::Type(ValueKind::Number(NumKind::Int32)),
+                    "ubyte" => TokenKind::Type(ValueKind::Number(NumKind::UInt8)),
 
-                    //"uint16" => TokenKind::Type(ValueKind::UInt16),
-                    //"ushort" => TokenKind::Type(ValueKind::UInt16),
+                    "uint16" => TokenKind::Type(ValueKind::Number(NumKind::UInt16)),
+                    "ushort" => TokenKind::Type(ValueKind::Number(NumKind::UInt16)),
 
-                    //"uint32" => TokenKind::Type(ValueKind::UInt32),
-                    //"uint" => TokenKind::Type(ValueKind::UInt32),
+                    "uint32" => TokenKind::Type(ValueKind::Number(NumKind::UInt32)),
+                    "uint" => TokenKind::Type(ValueKind::Number(NumKind::UInt32)),
 
-                    "uint64" => TokenKind::Type(ValueKind::UInt64),
-                    "ulong" => TokenKind::Type(ValueKind::UInt64),
+                    "uint64" => TokenKind::Type(ValueKind::Number(NumKind::UInt64)),
+                    "ulong" => TokenKind::Type(ValueKind::Number(NumKind::UInt64)),
 
-                    //"float32" => TokenKind::Type(ValueKind::Float32),
-                    //"float" => TokenKind::Type(ValueKind::Float32),
+                    "float32" => TokenKind::Type(ValueKind::Number(NumKind::Float32)),
+                    "float" => TokenKind::Type(ValueKind::Number(NumKind::Float32)),
 
-                    //"float64" => TokenKind::Type(ValueKind::Float64),
-                    //"double" => TokenKind::Type(ValueKind::Float64),
+                    "float64" => TokenKind::Type(ValueKind::Number(NumKind::Float64)),
+                    "double" => TokenKind::Type(ValueKind::Number(NumKind::Float64)),
                     
                     "bool" => TokenKind::Type(ValueKind::Bool),
                     "string" => TokenKind::Type(ValueKind::String),

@@ -1,6 +1,6 @@
 use crate::analyzer::{Analyzer, LocalId, ObjectInfo, ResolvedFunctionBody};
 use crate::intrinsic::IntrinsicParameters;
-use crate::{AzimuthId, CallStackFunction, Function, FunctionParameter, MappingTo};
+use crate::{AzimuthId, CallStackFunction, Function, FunctionParameter, MappingTo, NumKind};
 use crate::lexer::{Operator, Span};
 use crate::{
     Mapping, ObjectId, Number, Runtime, ShapeId, Value, ValueKind, executor,
@@ -92,7 +92,7 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
                         Operator::Dec => Ok((val - 1).into()),
                         Operator::BWNot => Ok((!val).into()),
                         Operator::Sub => Ok((-val).into()),
-                        operator => Err(RuntimeError::InvalidOperator { span, operator, operand:ValueKind::Int32 })
+                        operator => Err(RuntimeError::InvalidOperator { span, operator, operand:ValueKind::Number(NumKind::Int32) })
                     }
                 },   
                 (op, Value::String(val)) => 
@@ -152,7 +152,7 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
                     },
                       
                 // Int - Int
-                (Value::Number(left), op, r) if r.is_assignable_from(ValueKind::Number) => {
+                (Value::Number(left), op, r) if r.is_assignable_from(ValueKind::Number(NumKind::Any)) => {
                     let right = match evaluate(runtime, *right)? {
                         Value::Number(val) => val,
                         _ => unreachable!()
@@ -180,12 +180,12 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
                         
                         Operator::Range => Ok(create_range(left, right)),
                         Operator::RangeLT => {
-                            if left == right { Ok(Value::Array(Vec::new(), ValueKind::Int32)) }
+                            if left == right { Ok(Value::Array(Vec::new(), ValueKind::Number(NumKind::Int32))) }
                             else if left > right { Ok(create_range(left, right + 1)) }
                             else { Ok(create_range(left, right - 1)) }
                         } 
                         
-                        operator => Err(RuntimeError::InvalidOperator { span, operator, operand: ValueKind::Int32 }),
+                        operator => Err(RuntimeError::InvalidOperator { span, operator, operand: ValueKind::Number(NumKind::Int32) }),
                     }
                 },
                     
@@ -463,7 +463,7 @@ pub fn evaluate_place(runtime: &mut Runtime, expression:ResolvedExpression) -> R
             
             let i = if let Value::Number(index) = index {
                 index.to_i32() as usize
-            } else { return Err(RuntimeError::TypeMismatch { span, found: index, expected: ValueKind::Int32 }) };
+            } else { return Err(RuntimeError::TypeMismatch { span, found: index, expected: ValueKind::Number(NumKind::Int32) }) };
             
             match target {
                 Value::Pointer(object_id, azimuth_id, kind) => {
@@ -496,7 +496,7 @@ pub fn create_range(from: i32, to: i32) -> Value {
             .collect()
     };
 
-    Value::Array(values, ValueKind::Int32)
+    Value::Array(values, ValueKind::Number(NumKind::Int32))
 }
 
 pub fn execute(runtime: &mut Runtime, ast: Vec<ResolvedStatement>, static_info: HashMap<u32, (ObjectInfo, Vec<AzimuthId>)>) -> Result<ExecFlow, RuntimeError> {
@@ -742,7 +742,7 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
         ResolvedStatement::ForInc { span, local, start, cond, inc, statement } => {
             let start = match evaluate(runtime,  start)? {
                 Value::Number(num) => num,
-                other => return Err(RuntimeError::TypeMismatch { span, found: other, expected: ValueKind::Number }),
+                other => return Err(RuntimeError::TypeMismatch { span, found: other, expected: ValueKind::Number(NumKind::Any) }),
             };
             todo!()
         }

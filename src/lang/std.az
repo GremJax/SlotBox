@@ -4,65 +4,65 @@ shape Object {}
 
 namespace Math {
 
-    static Neg(int32 x) -> int32 
+    static Neg(number x) -> number 
         return -x
-    static BWNot(int32 x) -> int32 
+    static BWNot(number x) -> number 
         return ~x
-        
-    static Succ(int32 x) -> int32 
+
+    static Succ(number x) -> number 
         return x + 1
 
-    static Add(int32 a, int32 b) -> int32 
+    static Add(number a, number b) -> number 
         return a + b
-    static Sub(int32 a, int32 b) -> int32 
+    static Sub(number a, number b) -> number 
         return a - b
-    static Mul(int32 a, int32 b) -> int32 
+    static Mul(number a, number b) -> number 
         return a * b
-    static Div(int32 a, int32 b) -> int32 
+    static Div(number a, number b) -> number 
         return a / b
-    static Mod(int32 a, int32 b) -> int32 
+    static Mod(number a, number b) -> number 
         return a % b
-        
-    static BWAnd(int32 a, int32 b) -> int32 
+
+    static BWAnd(number a, number b) -> number 
         return a & b
-    static BWOr(int32 a, int32 b) -> int32 
+    static BWOr(number a, number b) -> number 
         return a | b
-    static BWXor(int32 a, int32 b) -> int32 
+    static BWXor(number a, number b) -> number 
         return a ^ b
-    static BWLShift(int32 a, int32 b) -> int32 
+    static BWLShift(number a, number b) -> number 
         return a << b
-    static BWRShift(int32 a, int32 b) -> int32 
+    static BWRShift(number a, number b) -> number 
         return a >> b
 
-    static Abs(int32 x) -> int32 
+    static Abs(number x) -> number 
         return (x >= 0) ? x : -x
-    static Max(int32 a, int32 b) -> int32 
+    static Max(number a, number b) -> number 
         return (a >= b) ? a : b
-    static Min(int32 a, int32 b) -> int32 
+    static Min(number a, number b) -> number 
         return (a <= b) ? a : b
-    static Clamp(int32 x, int32 min, int32 max) -> int32 
+    static Clamp(number x, number min, number max) -> number 
         return Max(min, Min(max, x))
-    static Sgn(int32 x) -> int32 
+    static Sgn(number x) -> number 
         return (x > 0) ? 1 : (x < 0) ? -1 : 0
 
-    static IsEven(int32 x) -> bool
+    static IsEven(number x) -> bool
         return (x % 2) == 0
-    static IsOdd(int32 x) -> bool
+    static IsOdd(number x) -> bool
         return (x % 2) != 0
-    static LT(int32 a, int32 b) -> bool
+    static LT(number a, number b) -> bool
         return a < b
-    static LTE(int32 a, int32 b) -> bool
+    static LTE(number a, number b) -> bool
         return a <= b
-    static GT(int32 a, int32 b) -> bool
+    static GT(number a, number b) -> bool
         return a > b
-    static GTE(int32 a, int32 b) -> bool
+    static GTE(number a, number b) -> bool
         return a >= b
-    static Eq(int32 a, int32 b) -> bool
+    static Eq(number a, number b) -> bool
         return a == b
-    static NEq(int32 a, int32 b) -> bool
+    static NEq(number a, number b) -> bool
         return a != b
-        
-    static GCD(int32 a, int32 b) -> int32 {
+
+    static GCD(number a, number b) -> number {
         while b != 0 {
             let temp = b
             b = a % b
@@ -70,20 +70,20 @@ namespace Math {
         }
         return a
     }
-    static LCM(int32 a, int32 b) -> int32 {
+    static LCM(number a, number b) -> number {
         if a == 0 || b == 0 return 0
         return (a / GCD(a, b)) * b
     }
-    static Mid(int32 a, int32 b) -> int32 {
+    static Mid(number a, number b) -> number {
         let max = Max(a,b)
         let min = Min(a,b)
         return min + ((max - min) / 2)
     }
-    
-    static Reflect(int32 x, int32 mid) -> int32 
+
+    static Reflect(number x, number mid) -> number 
         return (2 * mid) - x
 
-    static Pow(int32 x, int32 exp) -> int32 {
+    static Pow(number x, number exp) -> number {
         let res = 1
         for i in 1 ... exp {
             res *= x
@@ -91,7 +91,7 @@ namespace Math {
         return res
     }
 
-    static intrinsic Sqrt(int32 x) -> int32
+    static intrinsic Sqrt(number x) -> number
 }
 
 namespace IO {
@@ -115,6 +115,9 @@ namespace Random {
 shape Error {
     Message string
     Throw() throw self.Message
+
+    static Try(|() -> Object| func) -> bool
+        return func() =~ Error
 }
 
 shape Executor {
@@ -186,6 +189,21 @@ shape Cloneable<T> {
     abstract Clone() -> T
 }
 
+shape Benchmarking {
+    static intrinsic GetTime() -> uint64
+
+    StartTime uint64 = 0
+
+    Start() {
+        self.StartTime = GetTime()
+    }
+
+    Stop() {
+        let difference = GetTime() - self.StartTime
+        print "Time in millis: \(difference)"
+    }
+}
+
 shape Int32 {
     static const MAX int32 = 2147483647
     static const MIN int32 = -2147483648
@@ -201,7 +219,7 @@ shape Bool {
             else -> return null
         }
 
-    static FromBinary(int32 input) -> bool?
+    static FromBinary(number input) -> bool?
         switch input {
             1 -> return true
             0 -> return false
@@ -216,13 +234,13 @@ shape String {
 }
 
 shape Point {
-    X int32
-    Y int32 
+    X int
+    Y int
 }
 
 shape Vector {
-    X int32
-    Y int32
+    X int
+    Y int
 }
 
 print "standard library loaded"

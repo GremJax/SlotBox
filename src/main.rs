@@ -18,18 +18,13 @@ pub mod intrinsic;
 // Runtime Value
 #[derive(Default, Debug, Clone, Hash, PartialEq, Eq)]
 pub enum ValueKind {
-    Int32,
-    Float32,
-    UInt8,
-    UInt64,
-    Number,
+    Number(NumKind),
     Bool,
     String,
     Shape(ShapeInstance),
     Array(Box<ValueKind>),
     Azimuth(Box<ValueKind>),
     Option(Box<ValueKind>),
-    Object(Box<ValueKind>),
     Local(Box<ValueKind>),
     Pointer(Box<ValueKind>),
     ArrayElement(Box<ValueKind>),
@@ -49,11 +44,7 @@ impl ValueKind {
             kind => kind
         };
         match self {
-            ValueKind::UInt64 => other == ValueKind::Number || other.is_assignable_from(ValueKind::Number),
-            ValueKind::Int32 => other == ValueKind::Number || other.is_assignable_from(ValueKind::Number),
-            ValueKind::Float32 => other == ValueKind::Number || other.is_assignable_from(ValueKind::Number),
-            ValueKind::UInt8 => other == ValueKind::Number || other.is_assignable_from(ValueKind::Number),
-            ValueKind::Number => other == ValueKind::Number || other.is_assignable_from(ValueKind::Number),
+            ValueKind::Number(_) => other == ValueKind::Number(NumKind::Any) || other.is_assignable_from(ValueKind::Number(NumKind::Any)),
 
             ValueKind::Bool => other == ValueKind::Bool,
             ValueKind::String => other == ValueKind::String,
@@ -67,12 +58,31 @@ impl ValueKind {
                 ValueKind::Azimuth(other_k) => k.is_assignable_from(*other_k),
                 _ => false,
             },
-            ValueKind::Object(k) => k.is_assignable_from(other),
             ValueKind::Local(k) => k.is_assignable_from(other),
             ValueKind::Pointer(k) => k.is_assignable_from(other),
             ValueKind::ArrayElement(k) => k.is_assignable_from(other),
 
-            ValueKind::Function(info) => other == ValueKind::Function(info.clone()),
+            ValueKind::Function(info) => {
+                // Actions that return values are ok
+                if info.input_types.is_empty() && info.output_type.is_assignable_from(other.clone()) {
+                    return true
+                }
+
+                match other {
+                    ValueKind::Function(other) => {
+                        if !info.output_type.is_assignable_from(other.output_type) {
+                            return false
+                        }
+                        for i in 0..other.input_types.len() {
+                            if !info.input_types[i].is_assignable_from(other.input_types[i].clone()) {
+                                return false
+                            }
+                        }
+                        true
+                    },
+                    _ => false
+                }
+            }
 
             ValueKind::Option(k) => k.is_assignable_from(other),
             ValueKind::Generic(_) => true,
@@ -99,8 +109,9 @@ pub enum Number {
     Any(OrderedFloat<f64>),
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Copy, Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 enum NumKind {
+    Any,
     UInt8,
     UInt16,
     UInt32,
@@ -126,6 +137,7 @@ impl Number {
             Number::Int64(_) => NumKind::Int64,
             Number::Float32(_) => NumKind::Float32,
             Number::Float64(_) => NumKind::Float64,
+            Number::Any(_) => NumKind::Any,
             _ => todo!()
         }
     }
@@ -161,14 +173,7 @@ impl Number {
     }
 
     fn kind(&self) -> ValueKind {
-        match self {
-            Number::Int32(_) => ValueKind::Int32,
-            Number::UInt8(_) => ValueKind::UInt8,
-            Number::UInt64(_) => ValueKind::UInt64,
-            Number::Float32(_) => ValueKind::Float32,
-            Number::Any(_) => ValueKind::Number,
-            _ => todo!()
-        }
+        ValueKind::Number(self.num_kind())
     }
 
     fn to_string(&self) -> String {
@@ -534,7 +539,7 @@ pub struct Runtime {
     objects: HashMap<ObjectId, Object>,
     locals: HashMap<LocalId, Value>,
     obj_ref_count: HashMap<ObjectId, u32>,
-    local_ref_count: HashMap::<LocalId, u32>,
+    local_ref_count: HashMap<LocalId, u32>,
     call_stack: Vec<CallStackFunction>,
 }
 
@@ -697,13 +702,15 @@ impl Runtime {
             panic!("Slot already attached to object: {} -> {:?}", azimuth_id, object.slot_mapping.iter().find(|(st, map)| st.azimuth == azimuth_id))
         }
 
+        let mut set_default = false;
+
         // Check for present slot mappings
         let state_mapping = if target_az_id != azimuth_id {
 
             // Target exists but not present; attach
             if !object.has_azimuth(target_az_id) {
                 println!("- First attaching target slot {}", target_az.name);
-                self.attach_slot(span, object_id, target_az_id, None, generic.clone(), Some(MappingKind::Strict), None)?;
+                self.attach_slot(span.clone(), object_id, target_az_id, None, generic.clone(), Some(MappingKind::Strict), None)?;
             }
 
             let object = self.get_object_mut(object_id); // Reference again
@@ -750,6 +757,7 @@ impl Runtime {
                         let new_slot = object.allocate_slot();
                         println!("- Allocated local slot {} for {}", new_slot, azimuth.name);
                     
+                        set_default = true;
                         MappingTo::Slot(new_slot)
                     }   
                 }
@@ -767,6 +775,7 @@ impl Runtime {
                 let new_slot = object.allocate_slot();
                 println!("- Allocated local slot {} for {}", new_slot, azimuth.name);
             
+                set_default = true;
                 MappingTo::Slot(new_slot)
             }
         };
@@ -774,6 +783,15 @@ impl Runtime {
         let object = self.get_object_mut(object_id);
         let azimuth_state = AzimuthState{azimuth: azimuth_id, value_type: generic.unwrap_or(azimuth.value_type.clone())};
         object.slot_mapping.push((azimuth_state, state_mapping));
+
+        // Set default
+        match default {
+            Some(default) if set_default => {
+                self.set_slot_value(span.clone(), object_id, azimuth_id, default)?;
+            }
+            _ => {}
+        }
+
         Ok(true)
     }
 
@@ -1175,7 +1193,7 @@ impl Runtime {
     fn get_intrinsic_static_id(&self, kind: ValueKind) -> Option<ObjectId> {
         for shape in self.shapes.values() {
             if shape.name == match kind {
-                ValueKind::Int32 => "Int32",
+                ValueKind::Number(NumKind::Int32) => "Int32",
                 ValueKind::Bool => "Bool",
                 ValueKind::String => "String",
                 ValueKind::Array(_) => "Array",

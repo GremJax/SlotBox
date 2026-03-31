@@ -1,6 +1,6 @@
 use std::{collections::HashMap, fs};
 
-use crate::{AzimuthFlags, AzimuthId, FunctionSignature, GenericId, Number, ObjectId, ShapeId, Value, ValueKind, analyzer, executor::{self, OBJECT_INSTANCE, ShapeInstance}, intrinsic::IntrinsicOp, lexer::{self, Span}, loader::{Loader, Namespace, NamespaceId, NamespaceKind}, parser::{self, FunctionBody, MappingKind, RawMapping}}; 
+use crate::{AzimuthFlags, AzimuthId, FunctionSignature, GenericId, NumKind, Number, ObjectId, ShapeId, Value, ValueKind, analyzer, executor::{self, OBJECT_INSTANCE, ShapeInstance}, intrinsic::IntrinsicOp, lexer::{self, Span}, loader::{Loader, Namespace, NamespaceId, NamespaceKind}, parser::{self, FunctionBody, MappingKind, RawMapping}}; 
 use parser::{RawAzimuth, Expression, Statement, ShapeExpression};
 use lexer::{Operator};
 
@@ -500,7 +500,7 @@ pub fn type_binary_operands(operator: Operator) -> ValueKind {
         Operator::Mul | Operator::Div | Operator::Sub | Operator::Mod |
         Operator::BWAnd | Operator::BWOr | Operator::BWXor | Operator::BWNot | Operator::BWShiftL | Operator::BWShiftR |
         Operator::Inc | Operator::Dec | Operator::Range | Operator::RangeLT
-            => ValueKind::Int32,
+            => ValueKind::Number(NumKind::Int32),
             
         Operator::And | Operator::Or | Operator::Not
             => ValueKind::Bool,
@@ -885,7 +885,7 @@ impl Analyzer {
                             Operator::BWShiftR => Ok(ResolvedExpression::Value(span, (left >> right).into())),
                             Operator::Range => Ok(ResolvedExpression::Value(span, executor::create_range(left, right))),
                             Operator::RangeLT => {
-                                if left == right { Ok(ResolvedExpression::Value(span, Value::Array(Vec::new(), ValueKind::Int32))) }
+                                if left == right { Ok(ResolvedExpression::Value(span, Value::Array(Vec::new(), ValueKind::Number(NumKind::Int32)))) }
                                 else { Ok(ResolvedExpression::Value(span, executor::create_range(left, right + if left > right {1} else {-1}))) }
                             }
                             operator => Err(CompileError::InvalidBinaryOp { span, operator, left:left.into(), right:right.into() }),
@@ -914,7 +914,7 @@ impl Analyzer {
                 let true_expr = self.resolve_expression(*true_expr, scope)?;
                 let else_expr = self.resolve_expression(*else_expr, scope)?;
 
-                if true_expr.kind() != else_expr.kind() {
+                if !true_expr.kind().is_assignable_from(else_expr.kind()) {
                     return Err(CompileError::TypeMismatch { span, expected: true_expr.kind(), found: else_expr.kind(), loc: format!("ternary operation") } )
                 }
 
@@ -941,8 +941,8 @@ impl Analyzer {
                 let target = self.resolve_expression(*target, scope)?;
                 let index = self.resolve_expression(*index, scope)?;
 
-                if !index.kind().is_assignable_from(ValueKind::Int32) {
-                    return Err(CompileError::TypeMismatch { span, expected: ValueKind::Int32, found: index.kind(), loc:format!("array index") });
+                if !index.kind().is_assignable_from(ValueKind::Number(NumKind::Int32)) {
+                    return Err(CompileError::TypeMismatch { span, expected: ValueKind::Number(NumKind::Int32), found: index.kind(), loc:format!("array index") });
                 }
 
                 Ok(ResolvedExpression::ArrayAccess{span, target:Box::new(target), index:Box::new(index), optional, chained})
@@ -1262,8 +1262,8 @@ impl Analyzer {
             
             Statement::ForInc { span, local, start, cond, inc, statement } => {
                 let resolved_start = self.resolve_expression(start, scope)?;
-                if !resolved_start.kind().is_assignable_from(ValueKind::Number) {
-                    return Err(CompileError::TypeMismatch { span, expected: ValueKind::Number, found: resolved_start.kind(), loc: format!("for loop start value") } )
+                if !resolved_start.kind().is_assignable_from(ValueKind::Number(NumKind::Any)) {
+                    return Err(CompileError::TypeMismatch { span, expected: ValueKind::Number(NumKind::Any), found: resolved_start.kind(), loc: format!("for loop start value") } )
                 }
                 let resolved_condition = self.resolve_expression(cond, scope)?;
                 if !resolved_condition.kind().is_assignable_from(ValueKind::Bool) {
@@ -1272,7 +1272,7 @@ impl Analyzer {
 
                 let new_scope = self.create_scope(scope);
                 
-                let resolved_type = ResolvedShapeExpression::Primitive(span.clone(), ValueKind::Int32);
+                let resolved_type = ResolvedShapeExpression::Primitive(span.clone(), ValueKind::Number(NumKind::Int32));
                 let id = self.declare_local(new_scope, local, resolved_type.clone()).clone();
 
                 let inc = self.resolve_statement(*inc, new_scope)?;

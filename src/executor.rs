@@ -322,7 +322,7 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
                             MappingTo::Map(other_azimuth) => {
                                 runtime.get_slot_value(object_id, other_azimuth)
                             }
-                            MappingTo::Chain(azimuths) => {
+                            MappingTo::Chain(azimuths, _) => {
                                 Some(Value::FunctionChain(azimuths.clone(), kind.clone()))
                             }
                             MappingTo::Expression(expr) => {

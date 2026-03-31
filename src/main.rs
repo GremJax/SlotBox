@@ -407,7 +407,7 @@ pub struct ObjectFlags {
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum MappingTo {
     Slot(SlotStateId),
-    Chain(Vec<MappingTo>),
+    Chain(Vec<MappingTo>, usize),
     Map(AzimuthId),
     Link(ObjectId, AzimuthId),
     Expression(ResolvedExpression),
@@ -481,6 +481,22 @@ impl Object {
             if azimuth_state.azimuth == azimuth { return Some(slot_state_id) }
         }
         None
+    }
+
+    fn get_slot_state_id_mut(&mut self, azimuth: AzimuthId) -> Option<&mut MappingTo> {
+        for (azimuth_state, slot_state_id) in &mut self.slot_mapping {
+            if azimuth_state.azimuth == azimuth { return Some(slot_state_id) }
+        }
+        None
+    }
+
+    fn set_mapping(&mut self, azimuth: AzimuthId, mapping: MappingTo) {
+        for (azimuth_state, slot_state_id) in &mut self.slot_mapping {
+            if azimuth_state.azimuth == azimuth {
+                *slot_state_id = mapping;
+                break
+            }
+        }
     }
 
     fn set_value(&mut self, span:Span, azimuth:AzimuthId, value:Value) -> Result<Value, RuntimeError> {
@@ -681,81 +697,77 @@ impl Runtime {
             panic!("Slot already attached to object: {} -> {:?}", azimuth_id, object.slot_mapping.iter().find(|(st, map)| st.azimuth == azimuth_id))
         }
 
-        // Target mapping:
-        // Target already present -> map to target
-            // Create chain in target
-        // Target not present but exists -> attach target and map
-            // Create chain in target
-        // Entirely new azimuth -> static link or new slot
-
         // Check for present slot mappings
-        let state_mapping = if target_az_id != azimuth_id && object.has_azimuth(target_az_id) {
+        let state_mapping = if target_az_id != azimuth_id {
+
+            // Target exists but not present; attach
+            if !object.has_azimuth(target_az_id) {
+                println!("- First attaching target slot {}", target_az.name);
+                self.attach_slot(span, object_id, target_az_id, None, generic.clone(), Some(MappingKind::Strict), None)?;
+            }
+
+            let object = self.get_object_mut(object_id); // Reference again
             let mapping_to = object.get_slot_state_id(target_az_id).unwrap();
             
             println!("- Mapping {} to existing local slot {:?} (shared with {})", azimuth.name, mapping_to, target_az.name);
-
+            
             match mapping_kind {
-                Some(MappingKind::After) => todo!(),    // Create chain
-                Some(MappingKind::Before) => todo!(),   // Create chain
-                _ => MappingTo::Map(target_az_id)
-            }
-
-        } else {
-
-            // If different target, map it first
-            if target_az_id != azimuth_id {
-                // Attach the target slot mapped to the new slot
-                println!("- First attaching target slot {}", target_az.name);
-                self.attach_slot(span, object_id, target_az_id, None, generic.clone(), Some(MappingKind::Strict), None)?;
-
-                match mapping_kind {
-                    Some(MappingKind::After) => {           // Create chain
-                        let mut chain = [MappingTo::Map(target_az_id)].to_vec();
-
-                        // TODO - this is the flipped version. Target azimuth should make new chain, not this azimuth.
-                        let base = if azimuth.flags.is_static {
-                            let shape = self.get_shape(azimuth.shape_id).unwrap();
-                            MappingTo::Link(shape.static_id.clone().unwrap().id, azimuth.id)
-                            
-                        } else {
-                            // Create new 
-                            let slot_id = match mapping_kind {
-                                Some(MappingKind::After) => todo!(),    // Create chain
-                                Some(MappingKind::Before) => todo!(),   // Create chain
-                                _ => {
-                                    // Allocate new slot
-                                    let object = self.get_object_mut(object_id);
-                                    let new_slot = object.allocate_slot();
-                                    println!("- Allocated local slot {} for {}", new_slot, azimuth.name);
-                                    new_slot
-                                }
-                            };
-
-                            MappingTo::Slot(slot_id)
-                        };
-
-                        chain.push(base);
-
-                        MappingTo::Chain(chain)
-                    }
-                    Some(MappingKind::Before) => todo!(),   // Create chain
-                    _ => MappingTo::Map(target_az_id)
-                }  
-
-            } else {
-                // If static, make link
-                if azimuth.flags.is_static {
-                    let shape = self.get_shape(azimuth.shape_id).unwrap();
-                    MappingTo::Link(shape.static_id.clone().unwrap().id, azimuth.id)
+                None | Some(MappingKind::Strict) => MappingTo::Map(target_az_id),
+                _ => {
+                    // Create chain in target
+                    let after = matches!(mapping_kind, Some(MappingKind::After));
                     
-                // Create new 
-                } else {
-                    let object = self.get_object_mut(object_id);
-                    let new_slot = object.allocate_slot();
-                    println!("- Allocated local slot {} for {}", new_slot, azimuth.name);
-                
-                    MappingTo::Slot(new_slot)
+                    let old_target = object.get_slot_state_id(target_az_id);
+                    let (mut chain, base) = match old_target {
+
+                        // Add to existing chain
+                        Some(MappingTo::Chain(chain, base)) => (chain, base),
+
+                        // Create new chain
+                        Some(mapping) => {
+                            let old = mapping.clone();
+                            ([old].to_vec(), 0)
+                        }
+
+                        None => panic!("Old target {} somehow had no mapping: {:?}", target_az_id, object)
+                    };
+
+                    let index = if after { base + 1 } else { base };
+                    chain.insert(index, MappingTo::Map(azimuth_id));
+
+                    let new_base: usize = if after { base } else { base + 1 };
+                    let new_target = MappingTo::Chain(chain, new_base);
+                    object.set_mapping(target_az_id, new_target);
+
+                    // If static, make link
+                    if azimuth.flags.is_static {
+                        let shape = self.get_shape(azimuth.shape_id).unwrap();
+                        MappingTo::Link(shape.static_id.clone().unwrap().id, azimuth.id)
+                        
+                    // Create new 
+                    } else {
+                        let object = self.get_object_mut(object_id);
+                        let new_slot = object.allocate_slot();
+                        println!("- Allocated local slot {} for {}", new_slot, azimuth.name);
+                    
+                        MappingTo::Slot(new_slot)
+                    }   
                 }
+            }
+            
+        } else {
+            // If static, make link
+            if azimuth.flags.is_static {
+                let shape = self.get_shape(azimuth.shape_id).unwrap();
+                MappingTo::Link(shape.static_id.clone().unwrap().id, azimuth.id)
+                
+            // Create new 
+            } else {
+                let object = self.get_object_mut(object_id);
+                let new_slot = object.allocate_slot();
+                println!("- Allocated local slot {} for {}", new_slot, azimuth.name);
+            
+                MappingTo::Slot(new_slot)
             }
         };
 
@@ -835,7 +847,6 @@ impl Runtime {
 
         for azimuth_id in azimuths {
             let az = self.get_azimuth(azimuth_id);
-            if az.flags.is_static { continue }
 
             self.detach_slot(object_id, azimuth_id);
         }
@@ -1011,7 +1022,7 @@ impl Runtime {
                 MappingTo::Map(other_azimuth) => {
                     return self.get_slot_value(object_id, other_azimuth);
                 }
-                MappingTo::Chain(azimuths) => {
+                MappingTo::Chain(azimuths, _) => {
                     let azimuth = self.get_azimuth(slot);
                     return Some(Value::FunctionChain(azimuths.clone(), azimuth.value_type.clone()))
                 }
@@ -1058,7 +1069,7 @@ impl Runtime {
                 MappingTo::Map(other_azimuth) => {
                     return self.get_slot_value_mut(object_id, other_azimuth);
                 }
-                MappingTo::Chain(azimuths) => {
+                MappingTo::Chain(azimuths, _) => {
                     todo!()
                 }
                 MappingTo::Expression(expr) => {

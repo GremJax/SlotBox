@@ -115,3 +115,6 @@ funcRemap := FunctionRemap2 (
 print funcRemap
 funcRemap.DoSomething()
 funcRemap.DoSomethingElse()
+
+funcRemap =: FunctionRemap
+print funcRemap

@@ -283,14 +283,70 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
         
         ResolvedExpression::FunctionCall{ span, target, args, optional, chained} => {
             let mut params = Vec::new();
-            for arg in args {
-                params.push(evaluate(runtime, arg)?);
+            for arg in &args {
+                params.push(evaluate(runtime, arg.clone())?);
             }
 
-            let target = evaluate(runtime, *target)?;
+            let evaluated_target = evaluate(runtime, *target.clone())?;
 
-            let func = match target {
+            let func = match evaluated_target {
                 Value::Function(func) => func,
+
+                Value::FunctionChain(azimuths, kind) => {
+                    let object_id = match *target {
+
+                        ResolvedExpression::MemberAccess { target, .. } => {
+                            match evaluate(runtime, *target)? {
+                                Value::Object(id, _) => id,
+                                _ => return Err(RuntimeError::Error{span, message:format!("FUCK 2")})
+                            }
+                        }
+                        _ => return Err(RuntimeError::Error{span, message:format!("FUCK 1")})
+                    };
+
+                    // Make individual function calls for each function
+                    let mut value = Value::None;
+                    for mapping in azimuths {
+                        let found = match mapping {
+                            MappingTo::Slot(id) => {
+                                let object = runtime.get_object(object_id);
+                                if let Some(state) = object.get_slot_state(id) {
+                                    Some(state.storage.clone())
+                                } else {
+                                    todo!()
+                                }
+                            }
+                            MappingTo::Link(other_object_id, other_azimuth) => {
+                                runtime.get_slot_value(other_object_id, other_azimuth)
+                            }
+                            MappingTo::Map(other_azimuth) => {
+                                runtime.get_slot_value(object_id, other_azimuth)
+                            }
+                            MappingTo::Chain(azimuths) => {
+                                Some(Value::FunctionChain(azimuths.clone(), kind.clone()))
+                            }
+                            MappingTo::Expression(expr) => {
+                                //let result = executor::evaluate_place(self, expr);
+                                //return Some(&result.unwrap())
+                                todo!()
+                            }
+                        };
+
+                        let function = match found {
+                            None => return Err(RuntimeError::Error{span, message:format!("FUCK 3")}),
+                            Some(func) => func,
+                        };
+
+                        let function_call = ResolvedExpression::FunctionCall{ span:span.clone(), 
+                            target:Box::new(ResolvedExpression::Value(span.clone(), function.clone())), 
+                            args:args.clone(), optional, chained 
+                        };
+
+                        value = evaluate(runtime, function_call)?;
+                    }
+                    return Ok(value);
+                },
+
                 Value::None if chained => return Ok(Value::None),
                 other => return Err(RuntimeError::Error{span, message:format!("{:?} is not a function or function chain", other)}),
             };
@@ -554,7 +610,7 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
                     
                     let mut remap = Vec::new();
                     for mapping in mappings {
-                        remap.push(Mapping{from: mapping.from.id, to: MappingTo::Single(mapping.to.id)});
+                        remap.push(Mapping{from: mapping.from.id, to:mapping.to.id, kind:mapping.kind});
                     }
 
                     runtime.attach_shape_with_remap(span.clone(), object_id, shape_inst.clone(), remap)?;
@@ -576,7 +632,7 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
                     };
                     for (az, default) in defaults {
                         let value = evaluate(runtime, default)?;
-                        runtime.set_slot_value(span.clone(), object_id, az, value)?;
+                        //runtime.set_slot_value(span.clone(), object_id, az, value)?;
                     }
 
                 },

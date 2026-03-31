@@ -1,6 +1,6 @@
 use std::{collections::HashMap, fs};
 
-use crate::{AzimuthFlags, lexer::{self, Span}, parser::{self, Expression, Identifier, Mapping, ParseError, ParsedAtlas, ShapeExpression, Statement}};
+use crate::{AzimuthFlags, lexer::{self, Span}, parser::{self, Expression, Identifier, RawMapping, ParseError, ParsedAtlas, ShapeExpression, Statement}};
 
 #[derive(Debug, Clone)]
 pub enum LoadError {
@@ -42,7 +42,7 @@ pub type Filename = String;
 #[derive(Debug, Clone, Default)]
 pub enum NamespaceKind {
     #[default] Namespace,
-    Shape{parents: Vec<Identifier>, mappings: Vec<Mapping>, generics: Vec<ShapeExpression>},
+    Shape{parents: Vec<Identifier>, mappings: Vec<RawMapping>, generics: Vec<ShapeExpression>},
     Atlas
 }
 

@@ -1,6 +1,6 @@
 use std::{collections::HashMap, fs};
 
-use crate::{AzimuthFlags, AzimuthId, FunctionSignature, GenericId, Number, ObjectId, ShapeId, Value, ValueKind, analyzer, executor::{self, OBJECT_INSTANCE, ShapeInstance}, intrinsic::IntrinsicOp, lexer::{self, Span}, loader::{Loader, Namespace, NamespaceId, NamespaceKind}, parser::{self, FunctionBody, Mapping}}; 
+use crate::{AzimuthFlags, AzimuthId, FunctionSignature, GenericId, Number, ObjectId, ShapeId, Value, ValueKind, analyzer, executor::{self, OBJECT_INSTANCE, ShapeInstance}, intrinsic::IntrinsicOp, lexer::{self, Span}, loader::{Loader, Namespace, NamespaceId, NamespaceKind}, parser::{self, FunctionBody, MappingKind, RawMapping}}; 
 use parser::{RawAzimuth, Expression, Statement, ShapeExpression};
 use lexer::{Operator};
 
@@ -172,6 +172,7 @@ pub struct Scope {
 pub struct ResolvedMapping {
     pub from: AzimuthInfo,
     pub to: AzimuthInfo,
+    pub kind: MappingKind,
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -1078,7 +1079,7 @@ impl Analyzer {
         }
     }
 
-    pub fn resolve_mapping(&mut self, span:Span, mapping:Mapping, scope:ScopeId) -> Result<ResolvedMapping, CompileError> {
+    pub fn resolve_mapping(&mut self, span:Span, mapping:RawMapping, scope:ScopeId) -> Result<ResolvedMapping, CompileError> {
         let from = if let Some(symbol) = self.get_azimuth(&span, scope, mapping.from_slot.clone(), None, None)?{
             symbol.clone()
         } else { return Err(CompileError::UndefinedSymbol { span, name: mapping.from_slot }); };
@@ -1087,7 +1088,7 @@ impl Analyzer {
             symbol.clone()
         } else { return Err(CompileError::UndefinedSymbol { span, name: mapping.to_slot }); };
 
-        Ok(ResolvedMapping{from, to})
+        Ok(ResolvedMapping{from, to, kind:mapping.kind})
     }
 
     pub fn get_azimuth_with_id(&self, scope:ScopeId, id:AzimuthId) -> Option<&AzimuthInfo> {

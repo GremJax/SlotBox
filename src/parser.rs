@@ -161,10 +161,18 @@ pub enum ShapeExpression {
     Optional(Span, Box<ShapeExpression>),
 }
 
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub enum MappingKind {
+    Before,
+    After,
+    Strict
+}
+
 #[derive(Debug, Clone)]
-pub struct Mapping {
+pub struct RawMapping {
     pub from_slot: Identifier,
     pub to_slot: Identifier,
+    pub kind: MappingKind,
 }
 
 #[derive(Debug, Clone)]
@@ -192,14 +200,14 @@ pub enum Statement {
         name: Identifier, 
         slot_ids: Vec<RawAzimuth>,
         parents: Vec<Identifier>,
-        mappings: Vec<Mapping>,
+        mappings: Vec<RawMapping>,
         generics: Vec<ShapeExpression>,
     },
     DeclareObject { span: Span, name: Identifier, shape: ShapeExpression }, 
     DeclareLocal { span: Span, name: Identifier, value: Expression }, 
     Detach { span: Span, object: Expression, shape: ShapeExpression },
-    AddMapping { span: Span, object: Expression, mapping: Mapping },
-    Attach { span: Span, object: Expression, shape: ShapeExpression, mappings: Vec<Mapping> },
+    AddMapping { span: Span, object: Expression, mapping: RawMapping },
+    Attach { span: Span, object: Expression, shape: ShapeExpression, mappings: Vec<RawMapping> },
     Print { span: Span, expr: Expression },
     Expression { span: Span, expr: Expression },
     If {
@@ -714,9 +722,23 @@ fn parse_object_statement(span:Span, tokens: &mut PeekableTokens) -> Result<Stat
                             match token.kind {
                                 TokenKind::Operator(Operator::Arrow) => {
 
+                                    // Check for before/after keywords
+                                    let mut mapping_kind = MappingKind::Strict;
+                                    match tokens.peek().unwrap().kind {
+                                        TokenKind::Keyword(Keyword::Before) => {
+                                            tokens.next();
+                                            mapping_kind = MappingKind::Before
+                                        }
+                                        TokenKind::Keyword(Keyword::After) => {
+                                            tokens.next();
+                                            mapping_kind = MappingKind::After
+                                        }
+                                        _ => {}
+                                    }
+
                                     // Expect to slot identifier
                                     match tokens.next().unwrap().kind {
-                                        TokenKind::Identifier(to_slot) => mappings.push(Mapping { from_slot, to_slot }),
+                                        TokenKind::Identifier(to_slot) => mappings.push(RawMapping { from_slot, to_slot, kind:mapping_kind }),
                                         other => return Err(ParseError::IncorrectToken { span:token.span, token:other, expected:format!("Shape"), loc:format!("shape attachment remap value") }),
                                     }
 
@@ -1035,6 +1057,20 @@ fn parse_statement(tokens: &mut PeekableTokens) -> Result<Statement, ParseError>
                                         // From slot mapping
                                         TokenKind::Identifier(from_slot) => {
 
+                                            // Check for before/after keywords
+                                            let mut mapping_kind = MappingKind::Strict;
+                                            match tokens.peek().unwrap().kind {
+                                                TokenKind::Keyword(Keyword::Before) => {
+                                                    tokens.next();
+                                                    mapping_kind = MappingKind::Before
+                                                }
+                                                TokenKind::Keyword(Keyword::After) => {
+                                                    tokens.next();
+                                                    mapping_kind = MappingKind::After
+                                                }
+                                                _ => {}
+                                            }
+
                                             // Expect '->' operator
                                             let token = tokens.next().unwrap();
                                             if !matches!(token.kind, TokenKind::Operator(Operator::Arrow)) {
@@ -1043,7 +1079,7 @@ fn parse_statement(tokens: &mut PeekableTokens) -> Result<Statement, ParseError>
                                             
                                             // Expect to slot identifier
                                             match tokens.next().unwrap().kind {
-                                                TokenKind::Identifier(to_slot) => mappings.push(Mapping { from_slot, to_slot }),
+                                                TokenKind::Identifier(to_slot) => mappings.push(RawMapping { from_slot, to_slot, kind:mapping_kind }),
                                                 token => return Err(ParseError::IncorrectToken { span, token, expected:format!("Slot"), loc:format!("shape inheritance remap value") }),
                                             }
                                         },

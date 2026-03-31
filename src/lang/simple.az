@@ -35,6 +35,18 @@ shape OptionalTest3 {
     Test2 OptionalTest2?
 }
 
+shape FunctionRemap {
+    static DoSomething() {
+        print "Something was done"
+    }
+}
+
+shape FunctionRemap2 {
+    static DoSomethingElse() {
+        print "Something else was done"
+    }
+}
+
 static Bob int32 = 5
 static Explode() -> bool {
     return "NUKE" == "HELLO"
@@ -77,17 +89,29 @@ let test1 := OptionalTest1
 print test1.Value
 test1.Value = 6
 print test1.Value
+print test1
 
 let test2 := OptionalTest2
 print test2.Test1
 print test2?.Test1.Value
 test2.Test1 = test1
 print test2?.Test1.Value
+print test2
 
 let test3 := OptionalTest3
 print test3.Test2
 print test3?.Test2?.Test1?.Value ?? 100
 test3.Test2 = test2
 print test3?.Test2?.Test1?.Value ?? 100
+print test3
 
 print 0xF5
+
+let funcRemap := FunctionRemap
+print funcRemap
+funcRemap := FunctionRemap2 (
+    DoSomethingElse -> after DoSomething
+)
+print funcRemap
+funcRemap.DoSomething()
+funcRemap.DoSomethingElse()

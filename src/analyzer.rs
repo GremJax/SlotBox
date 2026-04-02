@@ -513,6 +513,40 @@ pub fn compile_time_error(span: Span, message:String) {
     panic!("[{:?}:{:?}]: {}", span.line, span.column, message);
 }
 
+macro_rules! numeric_binop {
+    ($span:expr, $left:expr, $right:expr, $operator:expr, $t:ty) => {{
+        let left = $left as $t;
+        let right = $right as $t;
+        match $operator {
+            Operator::Equal    => Ok(ResolvedExpression::Value($span, (left == right).into())),
+            Operator::NEqual   => Ok(ResolvedExpression::Value($span, (left != right).into())),
+            Operator::LT       => Ok(ResolvedExpression::Value($span, (left < right).into())),
+            Operator::GT       => Ok(ResolvedExpression::Value($span, (left > right).into())),
+            Operator::LTE      => Ok(ResolvedExpression::Value($span, (left <= right).into())),
+            Operator::GTE      => Ok(ResolvedExpression::Value($span, (left >= right).into())),
+            Operator::Add      => Ok(ResolvedExpression::Value($span, (left + right).into())),
+            Operator::Sub      => Ok(ResolvedExpression::Value($span, (left - right).into())),
+            Operator::Mul      => Ok(ResolvedExpression::Value($span, (left * right).into())),
+            Operator::Div      => Ok(ResolvedExpression::Value($span, (left / right).into())),
+            Operator::Mod      => Ok(ResolvedExpression::Value($span, (left % right).into())),
+            Operator::BWAnd    => Ok(ResolvedExpression::Value($span, (left & right).into())),
+            Operator::BWOr     => Ok(ResolvedExpression::Value($span, (left | right).into())),
+            Operator::BWXor    => Ok(ResolvedExpression::Value($span, (left ^ right).into())),
+            Operator::BWShiftL => Ok(ResolvedExpression::Value($span, (left << right).into())),
+            Operator::BWShiftR => Ok(ResolvedExpression::Value($span, (left >> right).into())),
+            Operator::Range    => Ok(ResolvedExpression::Value($span, executor::create_range(left as i32, right as i32))),
+            Operator::RangeLT  => {
+                if left == right {
+                    Ok(ResolvedExpression::Value($span, Value::Array(Vec::new(), ValueKind::Number(NumKind::Int32))))
+                } else {
+                    Ok(ResolvedExpression::Value($span, executor::create_range(left as i32, right as i32 + if left > right { 1 as i32 } else { -1 as i32 })))
+                }
+            }
+            op => Err(CompileError::InvalidBinaryOp { span: $span, operator: op, left: left.into(), right: right.into() }),
+        }
+    }};
+}
+
 pub struct Analyzer{
     pub scopes: Vec<Scope>,
     pub loader: Loader,
@@ -714,6 +748,22 @@ impl Analyzer {
         let mut known_shapes = Vec::new();
         known_shapes.push(shape.kind());
 
+        match &shape.kind() {
+            // Add inherited shapes
+            ValueKind::Shape(inst) => {
+                match self.shapes.get(&inst.id) {
+                    Some(known) => {
+                        for parent in &known.parent_ids {
+                            let inst = ShapeInstance{id:*parent, generics:inst.generics.clone()};
+                            known_shapes.push(ValueKind::Shape(inst))
+                        }
+                    }
+                    None => {}
+                }
+            }
+            _ => {}
+        }
+
         let local = self.declare_local(scope, name.clone(), shape);
 
         (ObjectInfo{id: id, name: name, known_shapes:known_shapes.clone()}, local)
@@ -862,35 +912,23 @@ impl Analyzer {
                     },
                     
                     // Int Optimization
-                    (ResolvedExpression::Value(span, Value::Number(left)), 
-                        ResolvedExpression::Value(_, Value::Number(right))) => {
-                        let left = left.to_i32();
-                        let right: i32 = right.to_i32();
-                        match operator {
-                            Operator::Equal => Ok(ResolvedExpression::Value(span, (left == right).into())),
-                            Operator::NEqual => Ok(ResolvedExpression::Value(span, (left != right).into())),
-                            Operator::LT => Ok(ResolvedExpression::Value(span, (left < right).into())),
-                            Operator::GT => Ok(ResolvedExpression::Value(span, (left > right).into())),
-                            Operator::LTE => Ok(ResolvedExpression::Value(span, (left <= right).into())),
-                            Operator::GTE => Ok(ResolvedExpression::Value(span, (left >= right).into())),
-                            Operator::Add => Ok(ResolvedExpression::Value(span, (left + right).into())),
-                            Operator::Sub => Ok(ResolvedExpression::Value(span, (left - right).into())),
-                            Operator::Mul => Ok(ResolvedExpression::Value(span, (left * right).into())),
-                            Operator::Div => Ok(ResolvedExpression::Value(span, (left / right).into())),
-                            Operator::Mod => Ok(ResolvedExpression::Value(span, (left % right).into())),
-                            Operator::BWAnd => Ok(ResolvedExpression::Value(span, (left & right).into())),
-                            Operator::BWOr => Ok(ResolvedExpression::Value(span, (left | right).into())),
-                            Operator::BWXor => Ok(ResolvedExpression::Value(span, (left ^ right).into())),
-                            Operator::BWShiftL => Ok(ResolvedExpression::Value(span, (left << right).into())),
-                            Operator::BWShiftR => Ok(ResolvedExpression::Value(span, (left >> right).into())),
-                            Operator::Range => Ok(ResolvedExpression::Value(span, executor::create_range(left, right))),
-                            Operator::RangeLT => {
-                                if left == right { Ok(ResolvedExpression::Value(span, Value::Array(Vec::new(), ValueKind::Number(NumKind::Int32)))) }
-                                else { Ok(ResolvedExpression::Value(span, executor::create_range(left, right + if left > right {1} else {-1}))) }
-                            }
-                            operator => Err(CompileError::InvalidBinaryOp { span, operator, left:left.into(), right:right.into() }),
+                    (ResolvedExpression::Value(span, Value::Number(left)),
+                    ResolvedExpression::Value(_, Value::Number(right))) => {
+                        let kind = Number::promote_kind(left.num_kind(), right.num_kind());
+                        match kind {
+                            //NumKind::Float64 => numeric_binop!(span, left.to_f64(), right.to_f64(), operator, f64),
+                            //NumKind::Float32 => numeric_binop!(span, left.to_f32(), right.to_f32(), operator, f32),
+                            NumKind::UInt64  => numeric_binop!(span, left.to_u64(), right.to_u64(), operator, u64),
+                            NumKind::Int64   => numeric_binop!(span, left.to_i64(), right.to_i64(), operator, i64),
+                            NumKind::UInt32  => numeric_binop!(span, left.to_u32(), right.to_u32(), operator, u32),
+                            NumKind::Int32   => numeric_binop!(span, left.to_i32(), right.to_i32(), operator, i32),
+                            NumKind::UInt16  => numeric_binop!(span, left.to_u16(), right.to_u16(), operator, u16),
+                            NumKind::Int16   => numeric_binop!(span, left.to_i16(), right.to_i16(), operator, i16),
+                            NumKind::UInt8  => numeric_binop!(span, left.to_u8(), right.to_u8(), operator, u8),
+                            NumKind::Int8   => numeric_binop!(span, left.to_i8(), right.to_i8(), operator, i8),
+                            _ => panic!("Couldnt do number conversion")
                         }
-                    },
+                    }
 
                     // DQuestion optimization
                     (ResolvedExpression::Value(span, Value::None), right) => match operator {
@@ -1148,6 +1186,8 @@ impl Analyzer {
                     mapping: self.resolve_mapping(span, mapping, scope)?,
                 }),
             Statement::Attach { span, object, shape, mappings } => {
+                let object = self.resolve_expression(object, scope)?;
+
                 let mut resolved_mappings = Vec::new();
                 for mapping in mappings {
                     resolved_mappings.push(self.resolve_mapping(span.clone(), mapping, scope)?);
@@ -1175,11 +1215,7 @@ impl Analyzer {
                     }
                 }
 
-                Ok(ResolvedStatement::Attach{ span, 
-                    object: self.resolve_expression(object, scope)?, 
-                    shape,
-                    mappings: resolved_mappings,
-                })
+                Ok(ResolvedStatement::Attach{ span, object, shape, mappings: resolved_mappings})
             },
             Statement::Print { span, expr } => Ok(ResolvedStatement::Print{span, expr: self.resolve_expression(expr, scope)?}),
             Statement::Seal { span, target } => {
@@ -1427,6 +1463,7 @@ impl Analyzer {
                 // Mappings
                 let mut resolved_mappings = Vec::new();
                 for mapping in mappings {
+                    println!("Resolving mapping {:?}", mapping);
                     resolved_mappings.push(self.resolve_mapping(span.clone(), mapping.clone(), shape_scope)?);
                 }
 

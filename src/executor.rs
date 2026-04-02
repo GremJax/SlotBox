@@ -35,6 +35,42 @@ impl std::fmt::Display for RuntimeError {
     }
 }
 
+macro_rules! numeric_binop {
+    ($span:expr, $left:expr, $right:expr, $operator:expr, $t:ty) => {{
+        let left = $left as $t;
+        let right = $right as $t;
+        match $operator {
+            Operator::Equal => Ok((left == right).into()),
+            Operator::NEqual => Ok((left != right).into()),
+            Operator::LT => Ok((left < right).into()),
+            Operator::GT => Ok((left > right).into()),
+            Operator::LTE => Ok((left <= right).into()),
+            Operator::GTE => Ok((left >= right).into()),
+            
+            Operator::Add => Ok((left + right).into()),
+            Operator::Sub => Ok((left - right).into()),
+            Operator::Mul => Ok((left * right).into()),
+            Operator::Div => Ok((left / right).into()),
+            Operator::Mod => Ok((left % right).into()),
+
+            Operator::BWAnd => Ok((left & right).into()),
+            Operator::BWOr => Ok((left | right).into()),
+            Operator::BWXor => Ok((left ^ right).into()),
+            Operator::BWShiftL => Ok((left << right).into()),
+            Operator::BWShiftR => Ok((left >> right).into()),
+            
+            Operator::Range => Ok(create_range(left as i32, right as i32)),
+            Operator::RangeLT => {
+                if left == right { Ok(Value::Array(Vec::new(), ValueKind::Number(NumKind::Int32))) }
+                else if left > right { Ok(create_range(left as i32, right as i32 + 1)) }
+                else { Ok(create_range(left as i32, right as i32 - 1)) }
+            } 
+            
+            operator => Err(RuntimeError::InvalidOperator { span:$span, operator, operand: ValueKind::Number(NumKind::Any) }),
+        }
+    }};
+}
+
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct ShapeInstance {
     pub id: ShapeId,
@@ -156,38 +192,22 @@ pub fn evaluate(runtime: &mut Runtime, expression:ResolvedExpression) -> Result<
                     let right = match evaluate(runtime, *right)? {
                         Value::Number(val) => val,
                         _ => unreachable!()
-                    }.to_i32();
-                    let left = left.to_i32();
-                    match op {
-                        Operator::Equal => Ok((left == right).into()),
-                        Operator::NEqual => Ok((left != right).into()),
-                        Operator::LT => Ok((left < right).into()),
-                        Operator::GT => Ok((left > right).into()),
-                        Operator::LTE => Ok((left <= right).into()),
-                        Operator::GTE => Ok((left >= right).into()),
-                        
-                        Operator::Add => Ok((left + right).into()),
-                        Operator::Sub => Ok((left - right).into()),
-                        Operator::Mul => Ok((left * right).into()),
-                        Operator::Div => Ok((left / right).into()),
-                        Operator::Mod => Ok((left % right).into()),
-
-                        Operator::BWAnd => Ok((left & right).into()),
-                        Operator::BWOr => Ok((left | right).into()),
-                        Operator::BWXor => Ok((left ^ right).into()),
-                        Operator::BWShiftL => Ok((left << right).into()),
-                        Operator::BWShiftR => Ok((left >> right).into()),
-                        
-                        Operator::Range => Ok(create_range(left, right)),
-                        Operator::RangeLT => {
-                            if left == right { Ok(Value::Array(Vec::new(), ValueKind::Number(NumKind::Int32))) }
-                            else if left > right { Ok(create_range(left, right + 1)) }
-                            else { Ok(create_range(left, right - 1)) }
-                        } 
-                        
-                        operator => Err(RuntimeError::InvalidOperator { span, operator, operand: ValueKind::Number(NumKind::Int32) }),
+                    };
+                    let kind = Number::promote_kind(left.num_kind(), right.num_kind());
+                    match kind {
+                        //NumKind::Float64 => numeric_binop!(span, left.to_f64(), right.to_f64(), operator, f64),
+                        //NumKind::Float32 => numeric_binop!(span, left.to_f32(), right.to_f32(), operator, f32),
+                        NumKind::UInt64  => numeric_binop!(span, left.to_u64(), right.to_u64(), op, u64),
+                        NumKind::Int64   => numeric_binop!(span, left.to_i64(), right.to_i64(), op, i64),
+                        NumKind::UInt32  => numeric_binop!(span, left.to_u32(), right.to_u32(), op, u32),
+                        NumKind::Int32   => numeric_binop!(span, left.to_i32(), right.to_i32(), op, i32),
+                        NumKind::UInt16  => numeric_binop!(span, left.to_u16(), right.to_u16(), op, u16),
+                        NumKind::Int16   => numeric_binop!(span, left.to_i16(), right.to_i16(), op, i16),
+                        NumKind::UInt8  => numeric_binop!(span, left.to_u8(), right.to_u8(), op, u8),
+                        NumKind::Int8   => numeric_binop!(span, left.to_i8(), right.to_i8(), op, i8),
+                        _ => panic!("Couldnt do number conversion")
                     }
-                },
+                }
                     
                 // String - String
                 (Value::String(left), op, ValueKind::String) => {
@@ -567,11 +587,30 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
             runtime.create_object(info);
 
             let shape = evaluate_shape(runtime, shape);
-            if let ValueKind::Shape(inst) = shape.clone() {
-                runtime.attach_shape(span.clone(), id, inst)?;
+            let mut known_shapes = [shape.clone()].to_vec();
+            match shape {
+                ValueKind::Shape(inst) => {
+                    let shape = runtime.get_shape(inst.id);
+                    match shape {
+                        Some(info) => {
+                            for parent in &info.parent_ids {
+                                let parent_inst = ShapeInstance{id:*parent, generics:inst.generics.clone()};
+                                known_shapes.push(ValueKind::Shape(parent_inst));
+                            }
+                            let mut mapping = Vec::new();
+                            for map in &info.mappings {
+                                mapping.push(Mapping{from:map.from.id, to:map.to.id, kind:map.kind.clone()})
+                            }
+                            runtime.attach_shape_with_remap(span.clone(), id, inst.clone(), mapping)?;
+                        }
+                        None => return Err(RuntimeError::Error{span, message:format!("Non shape initialized to obejct")})
+                    }
+                }
+                _ => return Err(RuntimeError::Error{span, message:format!("Non shape initialized to obejct")})
             }
-            
-            runtime.reserve_local(local, Value::Object(id, shape));
+
+            let object = ValueKind::Object(known_shapes);
+            runtime.reserve_local(local, Value::Object(id, object));
             
             Ok(ExecFlow::Normal(span))
         },
@@ -613,28 +652,18 @@ pub fn execute_statement(runtime: &mut Runtime, statement: ResolvedStatement) ->
                         remap.push(Mapping{from: mapping.from.id, to:mapping.to.id, kind:mapping.kind});
                     }
 
-                    runtime.attach_shape_with_remap(span.clone(), object_id, shape_inst.clone(), remap)?;
-
-                    // Defaults
-                    let defaults = {
-                        let mut defaults = Vec::new();
-                        let shape = runtime.get_shape(shape_inst.id).unwrap();
-                        for az in &shape.azimuths {
-                            let azimuth = runtime.get_azimuth(*az);
-                            match &azimuth.default_value {
-                                None => continue,
-                                Some(value) => {
-                                    defaults.push((*az, *value.clone()))
-                                }
+                    let shape = runtime.get_shape(shape_inst.id);
+                    println!("Shape: {:?}", shape);
+                    match shape {
+                        Some(info) => {
+                            for mapping in &info.mappings {
+                                remap.push(Mapping{from: mapping.from.id, to:mapping.to.id, kind:mapping.kind.clone()});
                             }
                         }
-                        defaults
-                    };
-                    for (az, default) in defaults {
-                        let value = evaluate(runtime, default)?;
-                        //runtime.set_slot_value(span.clone(), object_id, az, value)?;
+                        None => panic!("help")
                     }
 
+                    runtime.attach_shape_with_remap(span.clone(), object_id, shape_inst.clone(), remap)?;
                 },
                 (object, shape) => return Err(RuntimeError::Error{span, message:format!("Could not attach {:?} to {:?}", shape, object)})
             }

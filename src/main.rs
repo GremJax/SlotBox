@@ -25,6 +25,7 @@ pub enum ValueKind {
     Array(Box<ValueKind>),
     Azimuth(Box<ValueKind>),
     Option(Box<ValueKind>),
+    Object(Vec<ValueKind>),
     Local(Box<ValueKind>),
     Pointer(Box<ValueKind>),
     ArrayElement(Box<ValueKind>),
@@ -35,11 +36,39 @@ pub enum ValueKind {
 }
 
 impl ValueKind {
+    fn is_assignable_from_runtime(&self, other_raw:ValueKind, runtime:&Runtime) -> bool {
+        if self.is_assignable_from(other_raw.clone()) { return true }
+
+        match self {
+            ValueKind::Shape(inst) => {
+                let shape = runtime.get_shape(inst.id);
+                match shape {
+                    Some(info) => {
+                        for parent in &info.parent_ids {
+                            let parent_inst = ShapeInstance{id:*parent, generics:inst.generics.clone()};
+                            println!("Checking shape {:?} against {:?}", parent_inst, other_raw);
+                            if ValueKind::Shape(parent_inst.clone()).is_assignable_from(other_raw.clone()) { return true }
+                        }
+                        false
+                    }
+                    None => false
+                }
+            }
+            _ => false
+        }
+    }
+
     fn is_assignable_from(&self, other_raw: ValueKind) -> bool {
         let other = match other_raw {
             ValueKind::Option(kind) => {
                 if matches!(self, ValueKind::None) { return true }
                 *kind
+            }
+            ValueKind::Object(shapes) => {
+                for shape in shapes {
+                    if !self.is_assignable_from(shape) { return false }
+                }
+                return true
             }
             kind => kind
         };
@@ -58,6 +87,12 @@ impl ValueKind {
                 ValueKind::Azimuth(other_k) => k.is_assignable_from(*other_k),
                 _ => false,
             },
+            ValueKind::Object(k) => {
+                for shape in k {
+                    if shape.is_assignable_from(other.clone()) { return true }
+                }
+                false
+            }
             ValueKind::Local(k) => k.is_assignable_from(other),
             ValueKind::Pointer(k) => k.is_assignable_from(other),
             ValueKind::ArrayElement(k) => k.is_assignable_from(other),
@@ -142,13 +177,102 @@ impl Number {
         }
     }
 
+    fn to_u8(&self) -> u8 {
+        match self {
+            Number::UInt8(val) => *val,
+            num => panic!("{:?} not convertible to uint8", num),
+        }
+    }
+
+    fn to_i8(&self) -> i8 {
+        match self {
+            Number::Int8(val) => *val,
+            num => panic!("{:?} not convertible to int8", num),
+        }
+    }
+
+    fn to_u16(&self) -> u16 {
+        match self {
+            Number::UInt16(val) => *val,
+            Number::UInt8(val) => (*val).into(),
+            num => panic!("{:?} not convertible to uint16", num),
+        }
+    }
+
+    fn to_i16(&self) -> i16 {
+        match self {
+            Number::Int16(val) => *val,
+            Number::UInt8(val) => (*val).into(),
+            Number::Int8(val) => (*val).into(),
+            num => panic!("{:?} not convertible to int16", num),
+        }
+    }
+
+    fn to_u32(&self) -> u32 {
+        match self {
+            Number::UInt32(val) => *val,
+            Number::UInt16(val) => (*val).into(),
+            Number::UInt8(val) => (*val).into(),
+            num => panic!("{:?} not convertible to uint32", num),
+        }
+    }
+
     fn to_i32(&self) -> i32 {
         match self {
             Number::Int32(val) => *val,
+            Number::UInt16(val) => (*val).into(),
+            Number::Int16(val) => (*val).into(),
             Number::UInt8(val) => (*val).into(),
-            Number::UInt64(val) => panic!("long not convertible to int"),
-            Number::Float32(val) => panic!("float not convertible to int"),
-            num => panic!("{:?} not convertible to int", num),
+            Number::Int8(val) => (*val).into(),
+            num => panic!("{:?} not convertible to int32", num),
+        }
+    }
+
+    fn to_u64(&self) -> u64 {
+        match self {
+            Number::UInt64(val) => *val,
+            Number::UInt32(val) => (*val).into(),
+            Number::UInt16(val) => (*val).into(),
+            Number::UInt8(val) => (*val).into(),
+            num => panic!("{:?} not convertible to uint64", num),
+        }
+    }
+
+    fn to_i64(&self) -> i64 {
+        match self {
+            Number::Int64(val) => *val,
+            Number::UInt32(val) => (*val).into(),
+            Number::Int32(val) => (*val).into(),
+            Number::UInt16(val) => (*val).into(),
+            Number::Int16(val) => (*val).into(),
+            Number::UInt8(val) => (*val).into(),
+            Number::Int8(val) => (*val).into(),
+            num => panic!("{:?} not convertible to int64", num),
+        }
+    }
+
+    fn to_f32(&self) -> f32 {
+        match self {
+            Number::Float32(val) => (*val).into(),
+            Number::UInt16(val) => (*val).into(),
+            Number::Int16(val) => (*val).into(),
+            Number::UInt8(val) => (*val).into(),
+            Number::Int8(val) => (*val).into(),
+            num => panic!("{:?} not convertible to float32", num),
+        }
+    }
+
+    fn to_f64(&self) -> f64 {
+        match self {
+            Number::Float64(val) => (*val).into(),
+            Number::Float32(val) => (Number::Float32(*val)).to_f32().into(),
+            Number::UInt32(val) => (*val).into(),
+            Number::Int32(val) => (*val).into(),
+            Number::UInt16(val) => (*val).into(),
+            Number::Int16(val) => (*val).into(),
+            Number::UInt8(val) => (*val).into(),
+            Number::Int8(val) => (*val).into(),
+            num => panic!("{:?} not convertible to float64", num),
         }
     }
 
@@ -282,6 +406,78 @@ impl std::fmt::Display for Value {
     }
 }
 
+impl From<bool> for Value {
+    fn from(value: bool) -> Self {
+        Value::Bool(value)
+    }
+}
+
+impl From<u8> for Value {
+    fn from(value: u8) -> Self {
+        Value::Number(Number::UInt8(value))
+    }
+}
+
+impl From<i8> for Value {
+    fn from(value: i8) -> Self {
+        Value::Number(Number::Int8(value))
+    }
+}
+
+impl From<u16> for Value {
+    fn from(value: u16) -> Self {
+        Value::Number(Number::UInt16(value))
+    }
+}
+
+impl From<i16> for Value {
+    fn from(value: i16) -> Self {
+        Value::Number(Number::Int16(value))
+    }
+}
+
+impl From<u32> for Value {
+    fn from(value: u32) -> Self {
+        Value::Number(Number::UInt32(value))
+    }
+}
+
+impl From<i32> for Value {
+    fn from(value: i32) -> Self {
+        Value::Number(Number::Int32(value))
+    }
+}
+
+impl From<u64> for Value {
+    fn from(value: u64) -> Self {
+        Value::Number(Number::UInt64(value))
+    }
+}
+
+impl From<i64> for Value {
+    fn from(value: i64) -> Self {
+        Value::Number(Number::Int64(value))
+    }
+}
+
+impl From<f32> for Value {
+    fn from(value: f32) -> Self {
+        Value::Number(Number::Float32(value.into()))
+    }
+}
+
+impl From<f64> for Value {
+    fn from(value: f64) -> Self {
+        Value::Number(Number::Float64(value.into()))
+    }
+}
+
+impl From<String> for Value {
+    fn from(value: String) -> Self {
+        Value::String(value)
+    }
+}
+
 // Native Function
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct Function {
@@ -337,24 +533,6 @@ pub struct Mapping {
     pub from: AzimuthId,
     pub to: AzimuthId,
     pub kind: MappingKind,
-}
-
-impl From<bool> for Value {
-    fn from(value: bool) -> Self {
-        Value::Bool(value)
-    }
-}
-
-impl From<i32> for Value {
-    fn from(value: i32) -> Self {
-        Value::Number(Number::Int32(value))
-    }
-}
-
-impl From<String> for Value {
-    fn from(value: String) -> Self {
-        Value::String(value)
-    }
 }
 
 type SlotStateId = u32;
@@ -669,24 +847,24 @@ impl Runtime {
         
         if let Some(remap_id) = remap {
             let remap_slot = self.get_azimuth(remap_id);
-            if !generic.clone().unwrap_or(azimuth.value_type.clone()).is_assignable_from(remap_slot.value_type.clone()) { 
-                return Err(RuntimeError::Error{span, message: format!("Code 14: Type mismatch: {:?} with kind {:?} not assignable from {:?}", azimuth.name, azimuth.value_type, remap_slot.value_type)}); 
-            }
+            //if !generic.clone().unwrap_or(azimuth.value_type.clone()).is_assignable_from_runtime(remap_slot.value_type.clone(), self) { 
+            //    return Err(RuntimeError::Error{span, message: format!("Code 14: Type mismatch: {:?} with kind {:?} not assignable from {:?}", azimuth.name, azimuth.value_type, remap_slot.value_type)}); 
+            //}
             
             target_az_id = remap_id;
             println!("- Will remap {} -> {} (explicit)", azimuth.name, remap_slot.name);
-        }
+        //}
         // Find default remapping if exists
-        else if let Some(mapping) = shape.mappings.iter().find(|map| map.to.id == azimuth_id) {
-            let remapped_id = mapping.from.id;
+        //else if let Some(mapping) = shape.mappings.iter().find(|map| map.to.id == azimuth_id) {
+        //    let remapped_id = mapping.from.id;
             
-            let remapped_slot = self.get_azimuth(remapped_id);
-            if !generic.clone().unwrap_or(azimuth.value_type.clone()).is_assignable_from(remapped_slot.value_type.clone()) { 
-                return Err(RuntimeError::Error{span, message: format!("Type mismatch: {:?} not assignable from {:?}", azimuth.name, remapped_slot.value_type)}); 
-            }
+        //    let remapped_slot = self.get_azimuth(remapped_id);
+            //if !generic.clone().unwrap_or(azimuth.value_type.clone()).is_assignable_from_runtime(remapped_slot.value_type.clone(), self) { 
+            //    return Err(RuntimeError::Error{span, message: format!("Type mismatch: {:?} not assignable from {:?}", azimuth.name, remapped_slot.value_type)}); 
+            //}
 
-            target_az_id = remapped_id;
-            println!("- Will remap {} -> {} (shape default)", azimuth.name, remapped_slot.name);
+        //    target_az_id = remapped_id;
+        //    println!("- Will remap {} -> {} (shape default)", azimuth.name, remapped_slot.name);
         } else {
 
             // New slot
@@ -885,17 +1063,15 @@ impl Runtime {
             (shape.name.clone(), shape.azimuths.clone(), shape.parent_ids.clone(), shape.generics.len())
         };
 
+        println!("Remap: {:?}", remap);
+
         println!(
             "Attaching shape {} to object {}",
             shape_name, object_id
         );
 
-        for parent in parents{
-            self.attach_shape(span.clone(), object_id, ShapeInstance{ id:parent, generics:Vec::new() })?;
-        }
-
         for az_id in azimuths {
-            let azimuth = self.get_azimuth(az_id);
+            let azimuth = self.get_azimuth(az_id).clone();
 
             let generic_type = match azimuth.value_type {
                 ValueKind::Generic(generic) => {
@@ -904,15 +1080,26 @@ impl Runtime {
                 _ => None,
             };
 
+            let default_value = match azimuth.default_value {
+                None => None,
+                Some(expr) => Some(executor::evaluate(self, *expr)?),
+            };
+
             // Mapping
             if let Some(mapping) = remap.iter().find(|m| m.from == az_id) {
-                self.attach_slot(span.clone(), object_id, az_id, Some(mapping.to), generic_type, Some(mapping.kind.clone()), None)?;
+                self.attach_slot(span.clone(), object_id, az_id, Some(mapping.to), generic_type, Some(mapping.kind.clone()), default_value)?;
 
             } else {
-                if azimuth.flags.is_static { continue; }
-                self.attach_slot(span.clone(), object_id, az_id,None, generic_type, None, None)?;
+                if generic_type.is_none() && azimuth.flags.is_static { continue; }
+                self.attach_slot(span.clone(), object_id, az_id,None, generic_type, None, default_value)?;
             }
         }
+        
+        for parent in parents{
+            println!("Attaching inheritance: {:?}", parent);
+            self.attach_shape_with_remap(span.clone(), object_id, ShapeInstance{ id:parent, generics:shape_id.generics.clone() }, remap.clone())?;
+        }
+
         Ok(())
     }
 

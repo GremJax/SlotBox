@@ -76,6 +76,22 @@ impl Namespace {
         }
     }
 
+    pub fn traverse_mut(&mut self, tree: &mut NamespaceId) -> Option<&mut Namespace> {
+        //println!("My name is {}. Current tree: {:?}", self.name, tree);
+
+        let name = match tree.pop() {
+            Some(name) => name,
+            None => return Some(self)
+        };
+        
+        //println!("Found child: {:?} from children: {:?}", self.children.get(&name), self.children.keys());
+
+        match self.children.iter_mut().find(|child| child.name == name) {
+            Some(child) => child.traverse_mut(tree),
+            None => None
+        }
+    }
+
     pub fn get_azimuth(&self, identifier: &Identifier) -> Option<&LoadedAzimuth> {
         match self.azimuths.iter().find(|az| &az.name == identifier) {
             Some(az) => Some(az),
@@ -118,6 +134,7 @@ pub struct Loader {
     pub root: Namespace,
     pub next_az_id: u32,
     pub next_ns_id: u32,
+    pub extensions: Vec<Namespace>,
 }
 
 impl Loader {
@@ -138,6 +155,7 @@ impl Loader {
             load_order: Vec::new(),
             next_az_id: 0,
             next_ns_id: 0,
+            extensions: Vec::new(),
         }
     }
 
@@ -173,6 +191,10 @@ impl Loader {
             self.load_order.push((mapping.to, name, id));
         }
 
+        for extension in &mut self.extensions.clone() {
+            self.apply_extension(extension)?;
+        }
+
         Ok(())
     }
 
@@ -186,7 +208,7 @@ impl Loader {
                 Statement::Using { package, .. } => {
                     dependencies.push(package);
                 }
-                Statement::DeclareShape { span, name, slot_ids, parents, mappings, generics, .. } => {
+                Statement::DeclareShape { span, name, slot_ids, parents, mappings, generics, extension, .. } => {
                     let azimuths: Vec<LoadedAzimuth> = slot_ids.iter()
                         .map(|raw| LoadedAzimuth{
                             name:raw.name.clone(), 
@@ -194,7 +216,7 @@ impl Loader {
                             kind:raw.value_type.clone(),
                             default_value: raw.set_value.clone(),
                             flags: raw.flags.clone(),
-                        }).collect(); 
+                        }).collect();
                     let namespace = Namespace { 
                         span,
                         name:name.clone(), 
@@ -204,7 +226,12 @@ impl Loader {
                         dependencies:Vec::new(),
                         azimuths 
                     };
-                    children.push(namespace);
+                    
+                    if extension {
+                        self.extensions.push(namespace);
+                    } else {
+                        children.push(namespace);
+                    }
                 }
                 Statement::Namespace { span, name, content, .. } => {
                     let namespace = self.load_namespace(span, name.clone(), content)?;
@@ -306,6 +333,46 @@ impl Loader {
             }
         }
         namespaces
+    }
+
+    pub fn get_namespace_mut(&mut self, path:&mut NamespaceId) -> Option<&mut Namespace> {
+        self.root.traverse_mut(path)
+    }
+
+    pub fn apply_extension(&mut self, extension:&mut Namespace) -> Result<(), LoadError> {
+        let path = {
+            let found = self.get_namespaces_matching(extension.name.clone(), extension.dependencies.clone());
+            if found.len() == 0 {
+                return Err(LoadError::Error{span:extension.span.clone(), message:format!("Shape not found: {} with path {:?}", extension.name, extension.dependencies)});
+            }
+            else if found.len() > 1 {
+                return Err(LoadError::Error{span:extension.span.clone(), message:format!("Ambiguous extension: {:?}", found)});
+            }
+            found[0].clone().0
+        };
+
+        let (ext_parents, ext_mappings, ext_generics) = match &mut extension.kind {
+            NamespaceKind::Shape { parents, mappings, generics } => (parents, mappings, generics),
+            _ => unreachable!(),
+        };
+        
+        let base = match self.get_namespace_mut(&mut path.clone()) {
+            None => return Err(LoadError::Error{span:extension.span.clone(), message:format!("Shape somehow not found: {} with path {:?}", extension.name, path)}),
+            Some(base) => base,
+        };
+        
+        match &mut base.kind {
+            NamespaceKind::Shape{ parents, mappings, generics } => {
+                parents.append(ext_parents);
+                mappings.append(ext_mappings);
+                generics.append(ext_generics);
+                base.azimuths.append(&mut extension.azimuths);
+                base.children.append(&mut extension.children);
+            }
+            _ => return Err(LoadError::Error{span:extension.span.clone(), message:format!("Extension for non-shape: {:?}", base)}),
+        }
+        
+        Ok(())
     }
 
 }

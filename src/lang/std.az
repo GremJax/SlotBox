@@ -200,7 +200,7 @@ shape Benchmarking {
 
     Stop() {
         let difference = GetTime() - self.StartTime
-        print "Time in millis: \(difference)"
+        print "Time in millis: \{difference}"
     }
 }
 

@@ -202,6 +202,7 @@ pub enum Statement {
         parents: Vec<Identifier>,
         mappings: Vec<RawMapping>,
         generics: Vec<ShapeExpression>,
+        extension: bool,
     },
     DeclareObject { span: Span, name: Identifier, shape: ShapeExpression }, 
     DeclareLocal { span: Span, name: Identifier, value: Expression }, 
@@ -1001,8 +1002,10 @@ fn parse_statement(tokens: &mut PeekableTokens) -> Result<Statement, ParseError>
         },
 
         // Shape declaration
-        TokenKind::Keyword(Keyword::Shape) => {
-            tokens.next(); // consume 'shape' keyword
+        TokenKind::Keyword(Keyword::Shape) | TokenKind::Keyword(Keyword::Extension) => {
+             // consume keyword and determine extension
+            let extension = matches!(tokens.next().unwrap().kind, TokenKind::Keyword(Keyword::Extension));
+
             let shape_identifier = match tokens.next().unwrap().kind {
                 TokenKind::Identifier(name) => name.clone(),
                 token => return Err(ParseError::UnexpectedToken { span, token, loc:format!("shape declaration") }),
@@ -1057,6 +1060,12 @@ fn parse_statement(tokens: &mut PeekableTokens) -> Result<Statement, ParseError>
                                         // From slot mapping
                                         TokenKind::Identifier(from_slot) => {
 
+                                            // Expect '->' operator
+                                            let token = tokens.next().unwrap();
+                                            if !matches!(token.kind, TokenKind::Operator(Operator::Arrow)) {
+                                                return Err(ParseError::IncorrectToken { span, token:token.kind, expected:format!("->"), loc:format!("shape inheritance remap value") })
+                                            }
+
                                             // Check for before/after keywords
                                             let mut mapping_kind = MappingKind::Strict;
                                             match tokens.peek().unwrap().kind {
@@ -1069,12 +1078,6 @@ fn parse_statement(tokens: &mut PeekableTokens) -> Result<Statement, ParseError>
                                                     mapping_kind = MappingKind::After
                                                 }
                                                 _ => {}
-                                            }
-
-                                            // Expect '->' operator
-                                            let token = tokens.next().unwrap();
-                                            if !matches!(token.kind, TokenKind::Operator(Operator::Arrow)) {
-                                                return Err(ParseError::IncorrectToken { span, token:token.kind, expected:format!("->"), loc:format!("shape inheritance remap value") })
                                             }
                                             
                                             // Expect to slot identifier
@@ -1115,7 +1118,7 @@ fn parse_statement(tokens: &mut PeekableTokens) -> Result<Statement, ParseError>
                 return Err(ParseError::IncorrectToken{span, token:token.kind, expected:format!("{{"), loc:format!("shape declaration")});
             }
 
-            Ok(Statement::DeclareShape { span, name: shape_identifier, slot_ids, parents, mappings, generics })
+            Ok(Statement::DeclareShape { span, name: shape_identifier, slot_ids, parents, mappings, generics, extension })
         },
 
         // Azimuth declaration within namespace

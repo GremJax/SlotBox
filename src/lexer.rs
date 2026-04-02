@@ -76,7 +76,7 @@ pub enum Keyword {
     Lazy, Hidden, Trailhead,
 
     // Definitions
-    Shape, Let, Enum,
+    Shape, Let, Enum, Extension,
     Static, Seal, Locked, Const, Abstract, Intrinsic,
     Before, After, Next,
     PSelf, Attach, Detach,
@@ -367,6 +367,7 @@ impl Lexer {
 
                     "namespace" => TokenKind::Keyword(Keyword::Namespace),
                     "using" => TokenKind::Keyword(Keyword::Using),
+                    "extension" => TokenKind::Keyword(Keyword::Extension),
                     "shape" => TokenKind::Keyword(Keyword::Shape),
                     "enum" => TokenKind::Keyword(Keyword::Enum),
                     "let" => TokenKind::Keyword(Keyword::Let),

@@ -47,9 +47,12 @@ shape FunctionRemap2 {
     }
 }
 
-shape LongFunc {
+shape LongFunc : Benchmarking (
+    Start -> before DoFunc
+    Stop -> after DoFunc
+) {
     DoFunc() {
-        for i in 0 ... 100000 {
+        for i in 1 ... 100000 {
             let x = 55368
             x /= i
         }
@@ -130,10 +133,20 @@ print funcRemap
 
 let test := LongFunc
 print test
-test := Benchmarking (
-    Start -> before DoFunc
-    Stop -> after DoFunc
-)
+//test := Benchmarking (
+//    Start -> before DoFunc
+//    Stop -> after DoFunc
+//)
 print test
 test.DoFunc()
 print test
+
+//extension FunctionRemap2 {
+ //   static ExtensionCall() {
+ //       print "Extensions work"
+ //   }
+//}
+
+//funcRemap.ExtensionCall()
+
+print 5 + 5

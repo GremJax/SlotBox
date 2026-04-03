@@ -161,6 +161,20 @@ pub enum ShapeExpression {
     Optional(Span, Box<ShapeExpression>),
 }
 
+impl ShapeExpression {
+    pub fn get_identifier(&self) -> String {
+        use ShapeExpression::*;
+        match self {
+            Shape(_, identifier) => identifier.clone(),
+            Primitive(_, kind) => todo!(),
+            Array(_, expr) => todo!(),
+            Applied {base, .. } => base.clone(),
+            FunctionSignature(_, signature) => todo!(),
+            Optional(_, expr) => expr.get_identifier(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum MappingKind {
     Before,
@@ -173,6 +187,7 @@ pub struct RawMapping {
     pub from_slot: Identifier,
     pub to_slot: Identifier,
     pub kind: MappingKind,
+    pub shape: Identifier,
 }
 
 #[derive(Debug, Clone)]
@@ -357,9 +372,9 @@ fn parse_expression(tokens: &mut PeekableTokens) -> Result<Expression, ParseErro
                 };
 
                 // Add to qualifier
-                match &mut qualifier {
-                    Some(namespace) => namespace.push(identifier),
-                    None => qualifier = Some([identifier].to_vec()),
+                match qualifier {
+                    Some(namespace) => qualifier = Some(format!("{}::{}", namespace, identifier)),
+                    None => qualifier = Some(identifier),
                 }
 
                 // Expect dot or colon next
@@ -706,6 +721,7 @@ fn parse_object_statement(span:Span, tokens: &mut PeekableTokens) -> Result<Stat
             tokens.next(); // consume operator
             
             let shape = parse_shape_expression(tokens)?;
+            let shape_name = shape.get_identifier();
 
             // Check for mappings
             if matches!(tokens.peek().unwrap().kind, TokenKind::LeftParen) {
@@ -739,7 +755,7 @@ fn parse_object_statement(span:Span, tokens: &mut PeekableTokens) -> Result<Stat
 
                                     // Expect to slot identifier
                                     match tokens.next().unwrap().kind {
-                                        TokenKind::Identifier(to_slot) => mappings.push(RawMapping { from_slot, to_slot, kind:mapping_kind }),
+                                        TokenKind::Identifier(to_slot) => mappings.push(RawMapping { from_slot, to_slot, kind:mapping_kind, shape:shape_name.clone() }),
                                         other => return Err(ParseError::IncorrectToken { span:token.span, token:other, expected:format!("Shape"), loc:format!("shape attachment remap value") }),
                                     }
 
@@ -969,16 +985,12 @@ fn parse_statement(tokens: &mut PeekableTokens) -> Result<Statement, ParseError>
         TokenKind::Keyword(Keyword::Using) => {
             tokens.next(); // consume 'using' keyword
 
-            let mut namespace_id = NamespaceId::new();
-
             // First namespace
             let token = next(tokens, format!("package import"))?;
-            match token.kind {
-                TokenKind::Identifier(name) => {
-                    namespace_id.push(name);
-                }
+            let mut namespace_id = match token.kind {
+                TokenKind::Identifier(name) => name,
                 other => return Err(ParseError::IncorrectToken { span:token.span, token:other, expected:format!("namespace"), loc: format!("package import") })
-            }
+            };
 
             // Subspaces
             while let Some(token) = tokens.peek() {
@@ -989,7 +1001,7 @@ fn parse_statement(tokens: &mut PeekableTokens) -> Result<Statement, ParseError>
                         let token = next(tokens, format!("package import"))?;
                         match token.kind {
                             TokenKind::Identifier(name) => {
-                                namespace_id.push(name);
+                                namespace_id = format!("{}::{}", namespace_id, name);
                             }
                             other => return Err(ParseError::IncorrectToken { span:token.span, token:other, expected:format!("namespace"), loc: format!("package import") })
                         }
@@ -1045,7 +1057,7 @@ fn parse_statement(tokens: &mut PeekableTokens) -> Result<Statement, ParseError>
                 while let Some(token) = tokens.peek() {
                     let span = token.span.clone();
 
-                    match &token.kind {
+                    match token.kind.clone() {
                         TokenKind::Comma => { tokens.next(); }
                         TokenKind::Identifier(parent) => {
                             parents.push(parent.clone());
@@ -1082,7 +1094,7 @@ fn parse_statement(tokens: &mut PeekableTokens) -> Result<Statement, ParseError>
                                             
                                             // Expect to slot identifier
                                             match tokens.next().unwrap().kind {
-                                                TokenKind::Identifier(to_slot) => mappings.push(RawMapping { from_slot, to_slot, kind:mapping_kind }),
+                                                TokenKind::Identifier(to_slot) => mappings.push(RawMapping { from_slot, to_slot, kind:mapping_kind, shape:parent.clone() }),
                                                 token => return Err(ParseError::IncorrectToken { span, token, expected:format!("Slot"), loc:format!("shape inheritance remap value") }),
                                             }
                                         },

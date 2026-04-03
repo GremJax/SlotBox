@@ -106,15 +106,15 @@ namespace Random {
     static intrinsic Range(int from, int to) -> int32
 
     static Chance(int chance) -> bool 
-        return Random.Range(1, chance) == 1
+        return Range(1, chance) == 1
 
     static Bool() -> bool 
-        return Random.Chance(2)
+        return Chance(2)
 }
 
 shape Error {
     Message string
-    Throw() throw self.Message
+    Throw() throw self::Error.Message
 
     static Try(|() -> Object| func) -> bool
         return func() =~ Error
@@ -145,8 +145,8 @@ shape Parent<T> {
 
     Add(T child) {
         child := Child<T>
-        child.Parent = self
-        Children.Append(child)
+        child::Child.Parent = self
+        //Children.Append(child)
     }
 }
 
@@ -195,11 +195,11 @@ shape Benchmarking {
     StartTime uint64 = 0
 
     Start() {
-        self.StartTime = GetTime()
+        self::Benchmarking.StartTime = GetTime()
     }
 
     Stop() {
-        let difference = GetTime() - self.StartTime
+        let difference = GetTime() - self::Benchmarking.StartTime
         print "Time in millis: \{difference}"
     }
 }
@@ -213,7 +213,7 @@ shape Int32 {
 
 shape Bool {
     static Parse(string input) -> bool?
-        switch input.Lower().Trim() {
+        switch input::String.Lower()::String.Trim() {
             "true" -> return true
             "false" -> return false
             else -> return null

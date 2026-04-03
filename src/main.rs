@@ -1379,13 +1379,13 @@ impl Runtime {
 
     fn get_intrinsic_static_id(&self, kind: ValueKind) -> Option<ObjectId> {
         for shape in self.shapes.values() {
-            if shape.name == match kind {
+            if shape.name.contains(match kind {
                 ValueKind::Number(NumKind::Int32) => "Int32",
                 ValueKind::Bool => "Bool",
                 ValueKind::String => "String",
                 ValueKind::Array(_) => "Array",
                 _ => todo!()
-            } {
+            }) {
                 return Some(shape.id)
             }
         }

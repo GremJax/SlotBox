@@ -1,6 +1,6 @@
-use std::{collections::HashMap, fs};
+use std::{collections::{HashMap, HashSet}, fs};
 
-use crate::{AzimuthFlags, lexer::{self, Span}, parser::{self, Expression, Identifier, RawMapping, ParseError, ParsedAtlas, ShapeExpression, Statement}};
+use crate::{AzimuthFlags, analyzer::CompileError, lexer::{self, Span}, parser::{self, Expression, Identifier, ParseError, ParsedAtlas, RawMapping, ShapeExpression, Statement}};
 
 #[derive(Debug, Clone)]
 pub enum LoadError {
@@ -46,65 +46,22 @@ pub enum NamespaceKind {
     Atlas
 }
 
-pub type NamespaceId = Vec<Identifier>;
+pub type NamespaceId = Identifier;
 
 #[derive(Debug, Clone, Default)]
 pub struct Namespace {
     pub span: Span,
-    pub name: Identifier,
+    pub name: NamespaceId,
     pub id: u32,
     pub kind: NamespaceKind,
-    pub children: Vec<Namespace>,
+    pub children: Vec<NamespaceId>,
     pub azimuths: Vec<LoadedAzimuth>,
     pub dependencies: Vec<NamespaceId>,
 }
 
 impl Namespace {
-    pub fn traverse(&self, tree: &mut NamespaceId) -> Option<&Namespace> {
-        //println!("My name is {}. Current tree: {:?}", self.name, tree);
-
-        let name = match tree.pop() {
-            Some(name) => name,
-            None => return Some(&self)
-        };
-        
-        //println!("Found child: {:?} from children: {:?}", self.children.get(&name), self.children.keys());
-
-        match self.children.iter().find(|child| child.name == name) {
-            Some(child) => child.traverse(tree),
-            None => None
-        }
-    }
-
-    pub fn traverse_mut(&mut self, tree: &mut NamespaceId) -> Option<&mut Namespace> {
-        //println!("My name is {}. Current tree: {:?}", self.name, tree);
-
-        let name = match tree.pop() {
-            Some(name) => name,
-            None => return Some(self)
-        };
-        
-        //println!("Found child: {:?} from children: {:?}", self.children.get(&name), self.children.keys());
-
-        match self.children.iter_mut().find(|child| child.name == name) {
-            Some(child) => child.traverse_mut(tree),
-            None => None
-        }
-    }
-
     pub fn get_azimuth(&self, identifier: &Identifier) -> Option<&LoadedAzimuth> {
-        match self.azimuths.iter().find(|az| &az.name == identifier) {
-            Some(az) => Some(az),
-            None => {
-                for child in &self.children {
-                    match child.get_azimuth(identifier) {
-                        Some(az) => return Some(az),
-                        None => {},
-                    }
-                }
-                None
-            }
-        }
+        self.azimuths.iter().find(|az| &az.name == identifier)
     }
 
     pub fn has_static(&self) -> bool {
@@ -131,7 +88,7 @@ pub struct Loader {
     pub source_dir: String,
     pub files: HashMap<AtlasLocation, Vec<Statement>>,
     pub load_order: Vec<(AtlasLocation, Identifier, u32)>,
-    pub root: Namespace,
+    pub namespaces: Vec<Namespace>,
     pub next_az_id: u32,
     pub next_ns_id: u32,
     pub extensions: Vec<Namespace>,
@@ -140,18 +97,19 @@ pub struct Loader {
 impl Loader {
 
     pub fn new(source_dir: &str) -> Self {
+        let root =  Namespace {
+            span: Span::new(0,0, source_dir.to_string()),
+            name: "".to_string(),
+            id: 0,
+            kind: NamespaceKind::Atlas,
+            children: Vec::new(),
+            azimuths: Vec::new(),
+            dependencies: Vec::new(),
+        };
         Loader { 
             source_dir: source_dir.to_string(),
             files: HashMap::new(), 
-            root: Namespace {
-                span: Span::new(0,0, source_dir.to_string()),
-                name: "".to_string(),
-                id: 0,
-                kind: NamespaceKind::Atlas,
-                children: Vec::new(),
-                azimuths: Vec::new(),
-                dependencies: Vec::new(),
-            },
+            namespaces: [root].to_vec(),
             load_order: Vec::new(),
             next_az_id: 0,
             next_ns_id: 0,
@@ -173,7 +131,10 @@ impl Loader {
 
     pub fn load_program(&mut self, atlas_path: &str) -> Result<(), LoadError> {
         let atlas = self.load_atlas(atlas_path)?;
-        self.root.name = atlas.name;
+        let mut root_children = Vec::new();
+
+        let root = self.namespaces.get_mut(0).unwrap();
+        root.name = atlas.name.clone();
 
         for mapping in atlas.mappings {
             let ast = match self.load_file(Span::new(0,0,atlas_path.to_string()), mapping.to.clone())? {
@@ -184,12 +145,16 @@ impl Loader {
             self.files.insert(mapping.to.clone(), ast);
             let statements = self.files.get(&mapping.to).unwrap().clone();
 
-            let name = mapping.from;
+            let name = format!("{}::{}", atlas.name, mapping.from);
+            //println!("Creating namespace: {}", name);
             let namespace = self.load_namespace(Span::new(0,0, mapping.to.url.clone()), name.clone(), statements)?;
             let id = namespace.id;
-            self.root.children.push(namespace);
+            root_children.push(name.clone());
             self.load_order.push((mapping.to, name, id));
         }
+
+        let root = self.namespaces.get_mut(0).unwrap();
+        root.children.append(&mut root_children);
 
         for extension in &mut self.extensions.clone() {
             self.apply_extension(extension)?;
@@ -198,7 +163,7 @@ impl Loader {
         Ok(())
     }
 
-    pub fn load_namespace(&mut self, span:Span, name:Identifier, statements:Vec<Statement>) -> Result<Namespace, LoadError> {
+    pub fn load_namespace(&mut self, span:Span, identifier:Identifier, statements:Vec<Statement>) -> Result<Namespace, LoadError> {
         let mut children = Vec::new();
         let mut azimuths = Vec::new();
         let mut dependencies = Vec::new();
@@ -206,9 +171,11 @@ impl Loader {
         for statement in statements {
             match statement {
                 Statement::Using { package, .. } => {
-                    dependencies.push(package);
+                    let name = format!("{}::{}", self.namespaces.get(0).unwrap().name, package);
+                    dependencies.push(name);
                 }
                 Statement::DeclareShape { span, name, slot_ids, parents, mappings, generics, extension, .. } => {
+                    let name = format!("{}::{}", identifier, name);
                     let azimuths: Vec<LoadedAzimuth> = slot_ids.iter()
                         .map(|raw| LoadedAzimuth{
                             name:raw.name.clone(), 
@@ -219,27 +186,29 @@ impl Loader {
                         }).collect();
                     let namespace = Namespace { 
                         span,
-                        name:name.clone(), 
+                        name:name.clone(),
                         id: self.next_namespace_id(), 
                         kind:NamespaceKind::Shape{ parents, mappings, generics}, 
                         children:Vec::new(), 
-                        dependencies:Vec::new(),
+                        dependencies:dependencies.clone(),
                         azimuths 
                     };
                     
                     if extension {
                         self.extensions.push(namespace);
                     } else {
-                        children.push(namespace);
+                        children.push(name);
+                        self.namespaces.push(namespace);
                     }
                 }
                 Statement::Namespace { span, name, content, .. } => {
-                    let namespace = self.load_namespace(span, name.clone(), content)?;
-                    children.push(namespace);
+                    let name = format!("{}::{}", identifier, name);
+                    self.load_namespace(span, name.clone(), content)?;
+                    children.push(name);
                 }
                 Statement::DeclareAzimuth { azimuth, .. } => {
                     azimuths.push(LoadedAzimuth{
-                        name: azimuth.name.clone(), 
+                        name:azimuth.name.clone(), 
                         id: self.next_azimuth_id(),
                         kind: azimuth.value_type.clone(),
                         default_value: azimuth.set_value.clone(),
@@ -247,7 +216,7 @@ impl Loader {
                     });
                 }
                 Statement::Block ( statements ) => {
-                    let namespace = self.load_namespace(span.clone(), format!("block"), statements)?;
+                    let namespace = self.load_namespace(span.clone(), identifier.clone(), statements)?;
                     for child in namespace.children {
                         children.push(child);
                     }
@@ -261,7 +230,9 @@ impl Loader {
                 _ => {}
             }
         }
-        Ok(Namespace{span, name, id: self.next_namespace_id(), kind:NamespaceKind::Namespace, children, azimuths, dependencies})
+        let namespace = Namespace{span, name:identifier, id: self.next_namespace_id(), kind:NamespaceKind::Namespace, children, azimuths, dependencies};
+        self.namespaces.push(namespace.clone());
+        Ok(namespace)
     }
 
     pub fn load_atlas(&self, atlas_path: &str) -> Result<ParsedAtlas, LoadError> {
@@ -298,45 +269,74 @@ impl Loader {
 
     pub fn get_azimuths(&self, name:Identifier, using:Vec<NamespaceId>) -> Vec<(NamespaceId, &LoadedAzimuth)> {
         let mut azimuths = Vec::new();
-        for (tree, namespace) in self.get_namespaces(using){
+
+        for namespace in self.get_namespaces(using){
             
             if let Some(found) = namespace.get_azimuth(&name) {
-                let mut found_tree = tree.clone();
-                found_tree.push(name.clone());
+                let found_tree = format!("{}::{}", namespace.name.clone(), name);
                 azimuths.push((found_tree, found));
             }
         }
         azimuths
     }
 
-    pub fn get_namespaces_matching(&self, identifier: Identifier, using:Vec<NamespaceId>) -> Vec<(NamespaceId, &Namespace)> {
+    pub fn get_namespaces_matching(&self, identifier: Identifier, using:Vec<NamespaceId>) -> Vec<&Namespace> {
         let mut namespaces = Vec::new();
-        for mut tree in using {
-            tree.push(identifier.clone());
-            //println!("Searching {:?}", tree);
-            tree.reverse();
-            match self.root.traverse(&mut tree.clone()) {
-                Some(namespace) => namespaces.push((tree, namespace)),
-                None => {}
+        let mut seen = HashSet::new();
+
+        for namespaceid in using {
+            let name = format!("{}::{}", namespaceid, identifier);
+            for namespace in &self.namespaces {
+                if !seen.contains(&name) && namespace.name == name {
+                    namespaces.push(namespace);
+                    seen.insert(name.clone());
+                } else if !seen.contains(&identifier) && namespace.name == identifier {
+                    namespaces.push(namespace);
+                    seen.insert(identifier.clone());
+                }
             }
         }
         namespaces
     }
 
-    pub fn get_namespaces(&self, using:Vec<NamespaceId>) -> Vec<(NamespaceId, &Namespace)> {
+    pub fn get_namespaces(&self, using:Vec<NamespaceId>) -> Vec<&Namespace> {
         let mut namespaces = Vec::new();
-        for mut tree in using {
-            tree.reverse();
-            match self.root.traverse(&mut tree.clone()) {
-                Some(namespace) => namespaces.push((tree, namespace)),
-                None => {}
+        let mut seen = HashSet::new();
+
+        for namespaceid in using {
+            for namespace in &self.namespaces {
+                if !seen.contains(&namespaceid) && namespace.name == namespaceid {
+                    namespaces.push(namespace);
+                    seen.insert(namespaceid.clone());
+                }
             }
         }
         namespaces
     }
 
-    pub fn get_namespace_mut(&mut self, path:&mut NamespaceId) -> Option<&mut Namespace> {
-        self.root.traverse_mut(path)
+    pub fn get_single_namespace(&self, span:Span, child:&NamespaceId) -> Result<&Namespace, CompileError> {
+        let mut found = Vec::new();
+        for namespace in &self.namespaces {
+            if namespace.name == *child {
+                found.push(namespace);
+            }
+        }
+        if found.len() == 0 {
+            return Err(CompileError::Error{span, message:format!("Shape not found: {}", child)});
+        }
+        else if found.len() > 1 {
+            return Err(CompileError::Error{span, message:format!("Ambiguous extension: {:?}", found)});
+        }
+        Ok(found[0])
+    }
+
+    pub fn get_namespace_mut(&mut self, path:NamespaceId) -> Option<&mut Namespace> {
+        for namespace in &mut self.namespaces {
+            if namespace.name == path {
+                return Some(namespace)
+            }
+        }
+        None
     }
 
     pub fn apply_extension(&mut self, extension:&mut Namespace) -> Result<(), LoadError> {
@@ -348,7 +348,7 @@ impl Loader {
             else if found.len() > 1 {
                 return Err(LoadError::Error{span:extension.span.clone(), message:format!("Ambiguous extension: {:?}", found)});
             }
-            found[0].clone().0
+            found[0].name.clone()
         };
 
         let (ext_parents, ext_mappings, ext_generics) = match &mut extension.kind {
@@ -356,7 +356,7 @@ impl Loader {
             _ => unreachable!(),
         };
         
-        let base = match self.get_namespace_mut(&mut path.clone()) {
+        let base = match self.get_namespace_mut(path.clone()) {
             None => return Err(LoadError::Error{span:extension.span.clone(), message:format!("Shape somehow not found: {} with path {:?}", extension.name, path)}),
             Some(base) => base,
         };
@@ -380,6 +380,6 @@ impl Loader {
 pub fn load(source_dir: &str, atlas_path: &str) -> Result<Loader, LoadError> {
     let mut loader = Loader::new(source_dir);
     loader.load_program(atlas_path)?;
-    println!("\nLoaded namespaces: {:?}\n", loader.root);
+    println!("\nLoaded namespaces: {:?}\n", loader.namespaces);
     Ok(loader)
 }

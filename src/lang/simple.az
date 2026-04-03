@@ -6,7 +6,7 @@ shape TestShape {
 
 shape TestShapeChild : TestShape {
     TestFunction(int32 x) {
-        print self.TestValue * x
+        print self::TestShape.TestValue * x
     }
 }
 
@@ -14,12 +14,12 @@ shape EternalNesting {
     Nested EternalNesting?
 
     Nest(EternalNesting inside) {
-        if self.Nested == null self.Nested = inside
-        else self.Nested.Nest(inside)
+        if self::EternalNesting.Nested == null self::EternalNesting.Nested = inside
+        else self::EternalNesting.Nested.Nest(inside)
     }
 
     Layers() -> string {
-        return "Bingus. \{self.Nested?.Layers() ?? "Such is the way."}"
+        return "Bingus. \{self::EternalNesting.Nested?.Layers() ?? "Such is the way."}"
     }
 }
 
@@ -77,16 +77,16 @@ secondObject.TestFunction(5)
 let depth = 0
 let root := EternalNesting
 
-loop {
-    let input = IO.ReadLine() ?? "stop"
-    if input == "stop" break
-    
-    depth += 1
-    //let inside := EternalNesting
-    //root.Nest(inside)
-
-    print "Depth: \{depth}\n\{root.Layers()}"
-}
+//loop {
+//    let input = IO.ReadLine() ?? "stop"
+//    if input == "stop" break
+///    
+//    depth += 1
+//    //let inside := EternalNesting
+//    //root.Nest(inside)
+//
+//    print "Depth: \{depth}\n\{root.Layers()}"
+//}
 
 print Bob
 print Explode()
@@ -133,20 +133,15 @@ print funcRemap
 
 let test := LongFunc
 print test
-//test := Benchmarking (
-//    Start -> before DoFunc
-//    Stop -> after DoFunc
-//)
-print test
 test.DoFunc()
 print test
 
-//extension FunctionRemap2 {
- //   static ExtensionCall() {
- //       print "Extensions work"
- //   }
-//}
+extension FunctionRemap2 {
+    static ExtensionCall() {       
+        print "Extensions work"
+    }
+}
 
-//funcRemap.ExtensionCall()
+funcRemap.ExtensionCall()
 
 print 5 + 5
